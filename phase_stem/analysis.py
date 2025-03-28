@@ -326,8 +326,8 @@ class iDPC_DCTBuilder:
     Usage:
         1. builder = iDPCBuilder(CoMx, CoMy, pixel_size_R = 0.01, epsilon = 0.001)
 
-        2. crop_CoMx = ps.tools.crop_matrix(CoMx, [1024,1024], [512,512])
-           crop_CoMy = ps.tools.crop_matrix(CoMy, [1024,1024], [512,512])
+        2. crop_CoMx = ps.tools.crop_matrix(CoMx,(0,1), [1024,1024], [512,512])
+           crop_CoMy = ps.tools.crop_matrix(CoMy,(0,1), [1024,1024], [512,512])
         3. optimal_theta, optimal_flip = builder.optimize_rotation(crop_CoMx, crop_CoMy, thetas = np.linspace(60, 120, 30), 
                                                                 pixel_size_R=0.037, epsilon = 0.001)
         # Step 4: Perform phase reconstruction
@@ -503,8 +503,8 @@ class Noniterate_iDPCBuilder:
     Usage:
         1. builder = DFT_iDPCBuilder(CoMx, CoMy, epsilon=0.001, mask = None)
 
-        2. crop_CoMx = ps.tools.crop_matrix(CoMx, [1024, 1024], [512, 512])
-           crop_CoMy = ps.tools.crop_matrix(CoMy, [1024, 1024], [512, 512])
+        2. crop_CoMx = ps.tools.crop_matrix(CoMx,(0,1), [1024, 1024], [512, 512])
+           crop_CoMy = ps.tools.crop_matrix(CoMy, (0,1),[1024, 1024], [512, 512])
         3. optimal_theta, optimal_flip = builder.optimize_rotation(crop_CoMx, crop_CoMy, thetas=np.arange(-90, 91, 1), plot=True)
         4. phase = builder.run(optimal_theta, optimal_flip, expanding=True)
     """
@@ -669,8 +669,8 @@ class Noniterate_FMBuilder:
     Usage:
         1. builder = Noniterate_FMBuilder(CoMx, CoMy, epsilon = 0.01,mask = None)
 
-        2. crop_CoMx = ps.tools.crop_matrix(CoMx, [1024, 1024], [512, 512])
-           crop_CoMy = ps.tools.crop_matrix(CoMy, [1024, 1024], [512, 512])
+        2. crop_CoMx = ps.tools.crop_matrix(CoMx, (0,1),[1024, 1024], [512, 512])
+           crop_CoMy = ps.tools.crop_matrix(CoMy,(0,1), [1024, 1024], [512, 512])
         3. optimal_theta, optimal_flip = builder.optimize_rotation(crop_CoMx, crop_CoMy, thetas=np.arange(-90, 91, 1), plot=True)
         4. phase = builder.run(optimal_theta, optimal_flip, expanding=True)
     """
@@ -1112,20 +1112,18 @@ def chi_omega(kx, ky, ab, wavelength):
     the square of the modulus of the Fourier transform of the transmitted wavefunction g(k).
     """
     if isinstance(ab, dict):
-        aberrations = np.array([
+        keys = ['C1', 'A1', 'B2', 'A2', 'C3', 'A3', 'S3', 'A4']
+        aberrations = np.array([ab.get(key, 0) for key in keys], dtype=np.complex128)
+    elif isinstance(ab, np.ndarray):
+        # If the array has fewer than 8 elements, pad the missing ones with zero.
+        if len(ab) < 8:
+            pad_width = 8 - len(ab)
+            aberrations = np.concatenate([ab, np.zeros(pad_width, dtype=np.complex128)])
+        else:
+            aberrations = ab[:8]
+    else:
+        raise ValueError("Error: please input correct aberrations!")
 
-        ab['C1'],     #C1
-        ab['A1'],       #A1
-        ab['B2'],        #B2
-        ab['A2'],          #A2
-        ab['C3'],           #C3
-        ab['A3'],             #A3
-        ab['S3'],               #S3
-        ab['A4']                  #A4
-          ], dtype=np.complex128)
-    elif isinstance(ab, np.ndarray) and len(ab)>=8:
-        aberrations = ab
-    else: print("Error: please input correct aberrations!")
 
     phi = np.arctan2(ky, kx) # azimuthal, orientation
     alpha = np.arctan2(np.sqrt(kx ** 2 + ky ** 2), 1/wavelength) #radial, convergence angle
@@ -1149,20 +1147,17 @@ def chi_function(kx, ky, ab, wavelength):
 
     """
     if isinstance(ab, dict):
-        aberrations = np.array([
-
-        ab['C1'],     #C10
-        ab['A1'],       #C12
-        ab['B2'],        #C21, axial coma
-        ab['A2'],          #C23
-        ab['C3'],           #C30
-        ab['A3'],             #C34, 4-fold
-        ab['S3'],               #C32, star aberration
-        ab['A4']                  #C45
-          ], dtype=np.complex128)
-    elif isinstance(ab, np.ndarray) and len(ab)>=8:
-        aberrations = ab
-    else: print("Error: please input correct aberrations!")
+        keys = ['C1', 'A1', 'B2', 'A2', 'C3', 'A3', 'S3', 'A4']
+        aberrations = np.array([ab.get(key, 0) for key in keys], dtype=np.complex128)
+    elif isinstance(ab, np.ndarray):
+        # If the array has fewer than 8 elements, pad the missing ones with zero.
+        if len(ab) < 8:
+            pad_width = 8 - len(ab)
+            aberrations = np.concatenate([ab, np.zeros(pad_width, dtype=np.complex128)])
+        else:
+            aberrations = ab[:8]
+    else:
+        raise ValueError("Error: please input correct aberrations!")
 
     phi = np.arctan2(ky, kx) # azimuthal, orientation
     alpha = np.arctan2(np.sqrt(kx ** 2 + ky ** 2), 1/wavelength) #radial, convergence angle
@@ -1646,19 +1641,20 @@ def phase_filters_GPU(ab, segments, parameters, slices = 1, process = True):
     except ImportError: print("There is no tqdm module!")
 
     
-    aberrations = np.array([
-
-        ab['C1'],     #C1
-        ab['A1'],       #A1
-        ab['B2'],        #B2
-        ab['A2'],          #A2
-        ab['C3'],           #C3
-        ab['A3'],             #A3
-        ab['S3'],               #S3
-        ab['A4']                  #A4
-          ], dtype=np.complex128)
+    if isinstance(ab, dict):
+        keys = ['C1', 'A1', 'B2', 'A2', 'C3', 'A3', 'S3', 'A4']
+        aberrations = np.array([ab.get(key, 0) for key in keys], dtype=np.complex128)
+    elif isinstance(ab, np.ndarray):
+        # If the array has fewer than 8 elements, pad the missing ones with zero.
+        if len(ab) < 8:
+            pad_width = 8 - len(ab)
+            aberrations = np.concatenate([ab, np.zeros(pad_width, dtype=np.complex128)])
+        else:
+            aberrations = ab[:8]
+    else:
+        raise ValueError("Error: please input correct aberrations!")
                             
-    df = ab['C1'] #defocus
+    df = aberrations[0] #defocus
     tk = parameters["sample thickness(nm)"]
     #make sure slices[1]!=0
     if slices is None:
@@ -1831,7 +1827,7 @@ class OBFBuilder:
         start_y = max(center_y - half_sizey, 0)
         return OBFimage[start_x:start_x + self.sizeX_img, start_y:start_y + self.sizeY_img]
 
-    def reconstruct_OBF(self,upsampling = 1):
+    def reconstruct_OBF(self,upsampling = 1, plot=True):
         """ Main function to reconstruct the OBF image and Fourier domain representation. """
         phase_filters = self.normalize_PCTFs()
         d_Q = self.compute_dQ()
@@ -1842,8 +1838,8 @@ class OBFBuilder:
         else:
             OBF_image = pyfftw.interfaces.numpy_fft.ifft2(pyfftw.interfaces.numpy_fft.ifftshift(np.sum(OBF_Q, axis=0)))
             OBF_image = np.real(OBF_image)
-
-        self.plot(OBF_image, OBF_Q)
+        if plot:
+            self.plot(OBF_image, OBF_Q)
         return OBF_image, OBF_Q
 
     def plot(self, OBF_image, OBF_Q):
@@ -1872,110 +1868,156 @@ class OBFBuilder:
         plt.show()
 
  
+### revised by ChatGPT
 
-
+# from your_module import chi_omega, aperture, F_r, F_k, invF_k, invF_r, tools  # make sure to import these
 
 def DFT_toK(array):
     """
-    Foureir transformed the R-space to K-space with a normalization coefficients (1/mn).
-    array is cp.ndarray
+    Fourier transforms a real-space (R-space) array to reciprocal space (K-space) 
+    with a normalization coefficient of 1/(M*N).
+
+    Parameters:
+        array (cp.ndarray): Input real-space array.
+
+    Returns:
+        cp.ndarray: The Fourier-transformed (and shifted) K-space array.
     """
     M, N = array.shape
-    normalizing = 1/(M*N)
-    return normalizing * np.fft.fftshift(np.fft.fft2(array))
+    normalizing = 1 / (M * N)
+    return normalizing * cp.fft.fftshift(cp.fft.fft2(array))
+
 
 def invDFT_toR(array):
-    return np.fft.ifftshift(np.fft.ifft2(array))
+    """
+    Inverse Fourier transforms a K-space array back to R-space.
+
+    Parameters:
+        array (cp.ndarray): Input K-space array.
+
+    Returns:
+        cp.ndarray: The inverse Fourier-transformed R-space array.
+    """
+    return cp.fft.ifft2(cp.fft.ifftshift(array))
 
 
 def calculate_CTF(aberrations, parameters, segments, N=512):
     """
-    Corrected version of calculate_CTF function.
+    Calculate the Contrast Transfer Function (CTF) given aberrations, imaging 
+    parameters, and segmented angular ranges.
 
-    https://github.com/Pr4Et/SavvyScan/blob/main/Post_Processing/CTF_defocus_plots.m
+    Parameters:
+        aberrations: Aberration parameters (to be used by chi_omega).
+        parameters (dict): A dictionary containing imaging parameters, e.g.,
+            - "wavelength(nm)"             : wavelength in nm.
+            - "semi_convergence angle(rad)" : semi-convergence angle in rad.
+            - "collection angles(rad)"      : a tuple/list of two angles (min, max) in rad.
+        segments: A list/tuple with four angle ranges used for creating directional masks.
+        N (int): Size of the simulation grid (default is 512).
+
+    Returns:
+        tuple: (CTFiS, CTFiC) where each is a numpy array representing the 
+               sinusoidal and cosinusoidal integrated CTF components, respectively.
     """
-       
-    lambda_ = parameters["wavelength(nm)"]
+    # Extract imaging parameters.
+    wavelength = parameters["wavelength(nm)"]
     semi_kBF = parameters["semi_convergence angle(rad)"]
-    # Convert rad to 1/nm using theta/lambda
-    kBF = semi_kBF/lambda_
+    # Convert semi convergence angle (in rad) to spatial frequency (1/nm) using theta/lambda.
+    kBF = semi_kBF / wavelength
 
+    # Process collection angles and convert to spatial frequencies.
     k_DPC_min, k_DPC_max = parameters["collection angles(rad)"]
-    k_DPC_min *= 0.5 / lambda_
-    k_DPC_max *= 0.5 / lambda_
-    
+    k_DPC_min *= 0.5 / wavelength
+    k_DPC_max *= 0.5 / wavelength
+
+    # Create a k-space coordinate grid.
     VN = cp.arange(-N//2, N//2, 1)
     Nc = N // 2
-    dk = 2*kBF / Nc    # limiting the K range within 2*kBF
-    dr = 1 / (dk * N)
+    dk = 2 * kBF / Nc     # K-space increment (limiting the range within 2*kBF)
+    dr = 1 / (dk * N)     # Real-space sampling interval
     ekx = VN * dk
     eky = VN * dk
     ky, kx = cp.meshgrid(eky, ekx)
-    ksquare = kx ** 2 + ky ** 2
+    ksquare = kx**2 + ky**2
     knorm = cp.sqrt(ksquare)
-    
-    condition1 = tools.create_angle_mask(N, N, angle_range=segments[0])    
-    condition2 = tools.create_angle_mask(N, N, angle_range=segments[1])    
+
+    # Create angular masks for the four segments.
+    condition1 = tools.create_angle_mask(N, N, angle_range=segments[0])
+    condition2 = tools.create_angle_mask(N, N, angle_range=segments[1])
     condition3 = tools.create_angle_mask(N, N, angle_range=segments[2])
     condition4 = tools.create_angle_mask(N, N, angle_range=segments[3])
 
-    mask = ((knorm >= k_DPC_min) & (knorm <= k_DPC_max))
+    # Create a radial mask based on collection angles.
+    mask = (knorm >= k_DPC_min) & (knorm <= k_DPC_max)
 
+    # Combine the radial mask with each angular segment.
     seg_1 = cp.logical_and(mask, cp.array(condition1))
     seg_2 = cp.logical_and(mask, cp.array(condition2))
     seg_3 = cp.logical_and(mask, cp.array(condition3))
     seg_4 = cp.logical_and(mask, cp.array(condition4))
-    W_DPC_kx = (seg_1.astype(int) - seg_3.astype(int))*(cp.pi * kBF / 2)
-    W_DPC_ky = (seg_2.astype(int) - seg_4.astype(int))*(cp.pi * kBF / 2)  
-    
-    chi_q = chi_omega(kx, ky, aberrations, lambda_)
-    S1 = aperture(kx, ky, semi_kBF, lambda_)
-    psi_k = cp.array(S1.astype(int)) * cp.exp(-1j * cp.array(chi_q)) # K-space
-    
+
+    # Define weighted masks for Differential Phase Contrast (DPC) in kx and ky.
+    W_DPC_kx = (seg_1.astype(int) - seg_3.astype(int)) * (cp.pi * kBF / 2)
+    W_DPC_ky = (seg_2.astype(int) - seg_4.astype(int)) * (cp.pi * kBF / 2)
+
+    # Calculate the aberration-induced phase shift.
+    chi_q = chi_omega(kx, ky, aberrations, wavelength)
+    # Compute the aperture function.
+    S1 = aperture(kx, ky, semi_kBF, wavelength)
+    # Construct the wave function in K-space (apply aperture and aberrations).
+    psi_k = cp.array(S1.astype(int)) * cp.exp(-1j * cp.array(chi_q))
+
+    # Transform to real space.
     psi_in_r = F_r(psi_k, dk)
     psi_in_k = F_k(psi_in_r, dr)
-    #CTFicomS=(1/(2*cp.pi))*cp.conj(F_k(psi_in_r*cp.conj(psi_in_r), dr)) # ADF
-    CTFSx_sh = -1j * (cp.conj(F_k(psi_in_r * F_r(W_DPC_kx * invF_k(cp.conj(psi_in_r), dr, N), dk), dr)) 
+
+    # Compute the sinusoidal components (CTFS) of the CTF.
+    CTFSx_sh = -1j * (cp.conj(F_k(psi_in_r * F_r(W_DPC_kx * invF_k(cp.conj(psi_in_r), dr, N), dk), dr))
                       - cp.conj(F_k(cp.conj(psi_in_r) * invF_r(W_DPC_kx * F_k(psi_in_r, dr), dk, N), dr)))
-    
-    CTFSy_sh = -1j * (cp.conj(F_k(psi_in_r * F_r(W_DPC_ky * invF_k(cp.conj(psi_in_r), dr, N), dk), dr)) 
+    CTFSy_sh = -1j * (cp.conj(F_k(psi_in_r * F_r(W_DPC_ky * invF_k(cp.conj(psi_in_r), dr, N), dk), dr))
                       - cp.conj(F_k(cp.conj(psi_in_r) * invF_r(W_DPC_ky * F_k(psi_in_r, dr), dk, N), dr)))
-    
-    CTFCx_sh = -1 * (cp.conj(F_k(psi_in_r * F_r(W_DPC_kx * invF_k(cp.conj(psi_in_r), dr, N), dk), dr)) 
+
+    # Compute the cosinusoidal components (CTFC) of the CTF.
+    CTFCx_sh = -1 * (cp.conj(F_k(psi_in_r * F_r(W_DPC_kx * invF_k(cp.conj(psi_in_r), dr, N), dk), dr))
                      + cp.conj(F_k(cp.conj(psi_in_r) * invF_r(W_DPC_kx * F_k(psi_in_r, dr), dk, N), dr)))
-    
-    CTFCy_sh = -1 * (cp.conj(F_k(psi_in_r * F_r(W_DPC_ky * invF_k(cp.conj(psi_in_r), dr, N), dk), dr)) 
+    CTFCy_sh = -1 * (cp.conj(F_k(psi_in_r * F_r(W_DPC_ky * invF_k(cp.conj(psi_in_r), dr, N), dk), dr))
                      + cp.conj(F_k(cp.conj(psi_in_r) * invF_r(W_DPC_ky * F_k(psi_in_r, dr), dk, N), dr)))
 
-    nominator = 2 * 1j * ksquare 
+    # Build Fourier derivative operators in k-space.
+    nominator = 2 * 1j * ksquare
     denominator = cp.reciprocal(nominator)
-    denominator[cp.isinf(denominator)] = 0
-    denominator[0,0]=1
+    denominator[cp.isinf(denominator)] = 0  # Set infinite values (at k=0) to zero.
+    denominator[0, 0] = 1                 # Avoid division by zero at the origin.
     qxOperator = kx * denominator
     qyOperator = ky * denominator
-    
-    CTFiS = (qxOperator * CTFSx_sh + qyOperator * CTFSy_sh)
 
+    # Combine operators with the CTF components.
+    CTFiS = (qxOperator * CTFSx_sh + qyOperator * CTFSy_sh)
     CTFiC = (qxOperator * CTFCx_sh + qyOperator * CTFCy_sh)
-     
+
+    # Compute the radial averages of the real parts of the integrated CTF components.
     CTFiS_mean = tools.radialAverage(cp.real(CTFiS), Nc, Nc, Nc)
     CTFiC_mean = tools.radialAverage(cp.real(CTFiC), Nc, Nc, Nc)
 
+    # Generate a normalized k-space profile.
     k_profile = (dk * cp.arange(Nc)) / kBF
 
+    # Plot the integrated CTF curves.
     fig, axes = plt.subplots(1, 2, figsize=(16, 8), constrained_layout=True)
-
-    axes[0].plot(cp.asnumpy(k_profile), cp.asnumpy(CTFiS_mean*2*cp.pi))
+    axes[0].plot(cp.asnumpy(k_profile), cp.asnumpy(CTFiS_mean * 2 * cp.pi))
     axes[0].set_xlabel("k/$k_{BF}$")
     axes[0].set_ylabel("2$\pi$ CTF in sinusoidal component")
-
-    axes[1].plot(cp.asnumpy(k_profile), cp.asnumpy(CTFiC_mean*2*cp.pi))
+    axes[1].plot(cp.asnumpy(k_profile), cp.asnumpy(CTFiC_mean * 2 * cp.pi))
     axes[1].set_xlabel("k/$k_{BF}$")
     axes[1].set_ylabel("2$\pi$ CTF in cosinusoidal component")
-    fig.suptitle('CTF integrated curves')
+    fig.suptitle('CTF Integrated Curves')
     plt.show()
 
     return cp.asnumpy(CTFiS), cp.asnumpy(CTFiC)
+
+### above codes are generated by ChatGPT
+
+
 
 
 

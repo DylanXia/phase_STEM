@@ -185,11 +185,13 @@ def test_shape_of_array(num_images, array=(128,128)):
         print(*selected_images[i:i+array[0]])
         print('\n')
 
-def get_neighbors_avg(image_array, i, j, z):
+def get_neighbors_avg(image_array, pixel=(128,23), neigbour=2):
     """
     judging a pixel [i, j] with zero intensity is dead point or not based on its surrounding pixels, located "z" pixels away
     """
     rows, cols = image_array.shape
+    i, j = pixel
+    z = neigbour
     neighbors = image_array[max(0, i-z):min(rows, i+1+z), max(0, j-z):min(cols, j+1+z)].flatten()
 
     # Exclude the center pixel
@@ -320,12 +322,12 @@ def process_image(image_file,
                                                 cheetah["cross in row"], 
                                                 cheetah["dead pixels correction"])
     if crop["crop image"]: 
-        img_array = tools.crop_matrix(raw_array, crop["crop centre"], crop["crop size"])        
+        img_array = tools.crop_matrix(raw_array, (0, 1), crop["crop centre"], crop["crop size"])        
     else: img_array = raw_array
         
     return img_array, name
 
-def pack_images_to_hdf5(image_folder, file_name='packed_images', 
+def pack_images_to_cube(image_folder, file_name='packed_images', 
                         storage_mode="zarr",
                         array=(128,128), 
                         crop = {"crop image":True, "crop centre":(128,128), "crop size":(256,256)}, 
@@ -492,6 +494,212 @@ def pack_images_to_hdf5(image_folder, file_name='packed_images',
     else:
         print(f"The whole procedure takes {round(spend_time * 10**6)} microseconds.")
 
+
+def correct_crossingpixels(frame, column=(255, 256), row=(255, 256), nb=1):
+    """
+    Corrects pixels in the crossing area by interpolating values from neighboring pixels.
+    
+    Parameters:
+        frame (numpy.ndarray): Input 2D image frame.
+        column (tuple): Column indices defining the crossing area (must be a tuple of two integers).
+        row (tuple): Row indices defining the crossing area (must be a tuple of two integers).
+        nb (int): Number of pixels to consider for neighbor averaging.
+    
+    Returns:
+        numpy.ndarray: The corrected frame.
+    """
+    # Input validation
+    if not isinstance(column, tuple) or len(column) != 2:
+        raise ValueError("Column must be a tuple of two integers.")
+    if not isinstance(row, tuple) or len(row) != 2:
+        raise ValueError("Row must be a tuple of two integers.")
+    
+    dimx, dimy = frame.shape
+    crossing_pixels = [(row[0], column[0]), (row[1], column[0]), (row[0], column[1]), (row[1], column[1])]
+    
+    def get_valid_neighbors(coord, offsets):
+        r, c = coord
+        neighbors = []
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < dimx and 0 <= nc < dimy and (nr, nc) not in crossing_pixels:
+                neighbors.append(frame[nr, nc])
+        return neighbors
+    
+    # Correct crossing pixels
+    for r, c in crossing_pixels:
+        neighbors = get_valid_neighbors((r, c), [(-1, 0), (1, 0), (0, -1), (0, 1)])
+        if neighbors:
+            frame[r, c] = np.mean(neighbors)
+    
+    # Correct columns
+    for col in column:
+        for r in range(dimx):
+            if (r, col) not in crossing_pixels:
+                neighbors = get_valid_neighbors((r, col), [(-1, 0), (1, 0)])
+                if neighbors:
+                    frame[r, col] = np.mean(neighbors)
+    
+    # Correct rows
+    for r in row:
+        for c in range(dimy):
+            if (r, c) not in crossing_pixels:
+                neighbors = get_valid_neighbors((r, c), [(0, -1), (0, 1)])
+                if neighbors:
+                    frame[r, c] = np.mean(neighbors)
+    
+    return frame
+
+def crossIntensity_correction(image_array, image_axes=(0, 1), column=(255, 256), row=(255, 256), zero_correction=True, dead_pixel=2, nb=1, neighbor=1):
+    """
+    Correct intensity artifacts in CheeTah camera images, handling the characteristic cross pattern.
+
+    Args:
+        image_array (np.ndarray): Input image (2D, 3D, or 4D).
+        image_axes (tuple): Height and width axes (e.g., (0, 1) or (2, 3)).
+        column (tuple): Column indices of cross feature.
+        row (tuple): Row indices of cross feature.
+        zero_correction (bool): If True, correct zero-intensity pixels.
+        dead_pixel (int): Minimum number of non-zero neighbors required for zero-correction.
+        nb (int): Number of pixels for neighbor averaging in cross correction.
+        neighbor (int): Not used in this version; kept for compatibility.
+    
+    Returns:
+        np.ndarray: Corrected image.
+    """
+    if not isinstance(image_array, np.ndarray):
+        raise ValueError("Input must be a numpy array")
+    
+    shape = image_array.shape
+    ndim = len(shape)
+    
+    if ndim not in [2, 3, 4]:
+        raise ValueError("Input array must be 2D, 3D, or 4D")
+    
+    modified_image = image_array.astype(np.float32).copy()
+    
+    if ndim == 2:
+        modified_image = correct_crossingpixels(modified_image, column, row, nb)
+        if zero_correction:
+            zero_pixels = np.argwhere(modified_image == 0)
+            for pixel in zero_pixels:
+                modified_image = correct_deadpixel_intensity(modified_image, (pixel[0], pixel[1]), axes=(0, 1), dead_pixel=dead_pixel, neighbor=neighbor)
+    
+    elif ndim == 3:
+        non_spatial_axis = [d for d in range(3) if d not in image_axes][0]
+        for i in range(shape[non_spatial_axis]):
+            if non_spatial_axis == 0:
+                slice_2d = modified_image[i]
+            elif non_spatial_axis == 1:
+                slice_2d = modified_image[:, i, :]
+            else:
+                slice_2d = modified_image[:, :, i]
+            slice_2d = correct_crossingpixels(slice_2d, column, row, nb)
+            if non_spatial_axis == 0:
+                modified_image[i] = slice_2d
+            elif non_spatial_axis == 1:
+                modified_image[:, i, :] = slice_2d
+            else:
+                modified_image[:, :, i] = slice_2d
+        
+        if zero_correction:
+            sum_image = np.sum(modified_image, axis=non_spatial_axis)
+            zero_pixels = np.argwhere(sum_image == 0)
+            for pixel in zero_pixels:
+                modified_image = correct_deadpixel_intensity(modified_image, (pixel[0], pixel[1]), axes=image_axes, dead_pixel=dead_pixel, neighbor=neighbor)
+    
+    elif ndim == 4:
+        non_spatial_axes = [d for d in range(4) if d not in image_axes]
+        for i in range(shape[non_spatial_axes[0]]):
+            for j in range(shape[non_spatial_axes[1]]):
+                if image_axes == (0, 1):
+                    slice_2d = modified_image[:, :, i, j]
+                elif image_axes == (2, 3):
+                    slice_2d = modified_image[i, j, :, :]
+                slice_2d = correct_crossingpixels(slice_2d, column, row, nb)
+                if image_axes == (0, 1):
+                    modified_image[:, :, i, j] = slice_2d
+                elif image_axes == (2, 3):
+                    modified_image[i, j, :, :] = slice_2d
+        
+        if zero_correction:
+            sum_image = np.sum(modified_image, axis=tuple(non_spatial_axes))
+            zero_pixels = np.argwhere(sum_image == 0)
+            for pixel in zero_pixels:
+                modified_image = correct_deadpixel_intensity(modified_image, (pixel[0], pixel[1]), axes=image_axes, dead_pixel=dead_pixel, neighbor=neighbor)
+    
+    return modified_image
+
+def correct_deadpixel_intensity(image, coordinate, axes=(0, 1), dead_pixel=2, neighbor=1):
+    """
+    Replace pixel intensity at given coordinate with average of valid neighbors.
+    
+    Parameters:
+        image (numpy.ndarray): Input array (2D, 3D, or 4D).
+        coordinate (tuple): (row, col) coordinates of the pixel to correct.
+        axes (tuple): (height_dim, width_dim) indicating spatial dimensions.
+        dead_pixel (int): Minimum number of non-zero neighbors required for correction.
+        neighbor (int): Not used in this version; kept for compatibility.
+    
+    Returns:
+        numpy.ndarray: Array with modified intensity at specified coordinate.
+    """
+    result = image.copy()
+    shape = image.shape
+    ndim = len(shape)
+    row, col = coordinate
+    height_dim, width_dim = axes if ndim > 2 else (0, 1)
+    height, width = shape[height_dim], shape[width_dim]
+    
+    if not (0 <= row < height and 0 <= col < width):
+        raise ValueError("Pixel coordinates out of bounds")
+    
+    # Define neighbor offsets (up, down, left, right)
+    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # Calculate valid neighbors
+    neighbor_coords = [(row + dr, col + dc) for dr, dc in offsets]
+    valid_coords = [(nr, nc) for nr, nc in neighbor_coords if 0 <= nr < height and 0 <= nc < width]
+    
+    if not valid_coords:
+        return result
+    
+    # Process based on array dimensionality
+    if ndim == 2:
+        intensities = [image[nr, nc] for nr, nc in valid_coords if image[nr, nc] > 0]
+        if len(intensities) >= dead_pixel:
+            result[row, col] = np.mean(intensities)
+    
+    elif ndim == 3:
+        non_spatial_dim = [d for d in range(3) if d not in axes][0]
+        for k in range(shape[non_spatial_dim]):
+            if axes == (0, 1):
+                intensities = [image[nr, nc, k] for nr, nc in valid_coords if image[nr, nc, k] > 0]
+                if len(intensities) >= dead_pixel:
+                    result[row, col, k] = np.mean(intensities)
+            elif axes == (1, 2):
+                intensities = [image[k, nr, nc] for nr, nc in valid_coords if image[k, nr, nc] > 0]
+                if len(intensities) >= dead_pixel:
+                    result[k, row, col] = np.mean(intensities)
+            else:  # axes == (0, 2)
+                intensities = [image[nr, k, nc] for nr, nc in valid_coords if image[nr, k, nc] > 0]
+                if len(intensities) >= dead_pixel:
+                    result[row, k, col] = np.mean(intensities)
+    
+    elif ndim == 4:
+        non_spatial_dims = [d for d in range(4) if d not in axes]
+        for p1 in range(shape[non_spatial_dims[0]]):
+            for p2 in range(shape[non_spatial_dims[1]]):
+                if axes == (0, 1):
+                    intensities = [image[nr, nc, p1, p2] for nr, nc in valid_coords if image[nr, nc, p1, p2] > 0]
+                    if len(intensities) >= dead_pixel:
+                        result[row, col, p1, p2] = np.mean(intensities)
+                elif axes == (2, 3):
+                    intensities = [image[p1, p2, nr, nc] for nr, nc in valid_coords if image[p1, p2, nr, nc] > 0]
+                    if len(intensities) >= dead_pixel:
+                        result[p1, p2, row, col] = np.mean(intensities)
+    
+    return result
 
 def batch_save(matches, path):
     """

@@ -257,7 +257,7 @@ class TemplateMatcher:
         Selects a template from the image based on the given top-left corner and dimensions.
         The size of template is designed in a dict with keys {'top_left': [10,10], 'height':10, 'width':10}
         """
-        top_left = template_shape['top_left']
+        top_left = template_shape['top_left'].T
         height = template_shape['height']
         width = template_shape['width']
         
@@ -267,8 +267,11 @@ class TemplateMatcher:
         """
         Searches for the selected template in the image and computes the result.
         There are four methods provided by cv2:
-        methods = ['TM_CCOEFF', 'TM_CCOEFF_NORMED', 
-                    'TM_CCORR', 'TM_CCORR_NORMED']
+        methods = ['TM_CCOEFF', 'TM_CCOEFF_NORMED', 'TM_CCORR',
+                  'TM_CCORR_NORMED', 'TM_SQDIFF', 'TM_SQDIFF_NORMED']
+        Reference:
+        https://opencv24-python-tutorials.readthedocs.io/en/latest/py_tutorials/py_imgproc/py_template_matching/py_template_matching.html
+        
         """
         self.method = method
         if self.template is None:
@@ -566,14 +569,14 @@ def show_FFT(img, resolution, unit="nm"):
         magnitude_fft0 = ndimage.gaussian_filter(magnitude_fft, sigma=(sigma, sigma), order=0)
         magnitude_fft1 = ndimage.gaussian_filter(magnitude_fft0, sigma=(1,1), order=0)
         sharpened = magnitude_fft1 + alpha *(magnitude_fft0 - magnitude_fft1)
-        display = linscale(crop_matrix(sharpened, [int(sx/2), int(sy/2)],[int(sx/zoom_in), int(sy/zoom_in)]))
+        display = linscale(crop_matrix(sharpened, (0,1),  [int(sx/2), int(sy/2)],[int(sx/zoom_in), int(sy/zoom_in)]))
         dx, dy = display.shape
         #pixe size in reciprocal space
         rec_resolution = 1/(resolution*sx)
         centre = np.array([int(dx/2), int(dy/2)])
         extend_edge = rec_resolution*dx/2
         extend = [-extend_edge, extend_edge, -extend_edge, extend_edge]
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(8,8))
         ax.imshow(display, cmap=plt.cm.gray, extent=extend)
         radius = draw_circle*rec_resolution
         patch = plt.Circle((0,0), radius, color='yellow', linewidth=2, fill=False)
@@ -766,7 +769,7 @@ def browse_images(dataset, properties={
             magnitude_fft0 = ndimage.gaussian_filter(magnitude_fft, sigma=(5,5), order=0)
             magnitude_fft1 = ndimage.gaussian_filter(magnitude_fft0, sigma=(1,1), order=0)
             magnitude_fft2 = magnitude_fft1 + 50 *(magnitude_fft0 - magnitude_fft1)
-            fft_crop = crop_matrix(magnitude_fft2, [int(sx/2), int(sy/2)],[int(sx/ratio), int(sy/ratio)])
+            fft_crop = crop_matrix(magnitude_fft2, (0,1), [int(sx/2), int(sy/2)],[int(sx/ratio), int(sy/ratio)])
             power_spec = linscale(fft_crop) #make the intensity linear
 
             #pixe size in reciprocal space
@@ -1107,59 +1110,79 @@ def data_tree(file):
         head_tree(file[key])
 
 
-def crop_matrix(original_matrix, centre=None, crop_size=None):
-
+def crop_matrix(original_matrix, axis=(0, 1), centre=None, crop_size=None):
     """
+    Crops a submatrix from the original matrix around a specified centre.
+
     Args:
-    centre: vector, stored the coordinate of the centre of cropped matrix in the original matrix
-            The coordinate of the centre is assumed that the original zero point is on the left top.
-    e.g.    centre = [original_matrix.shape[0]//2, original_matrix.shape[1]//2]
+        original_matrix (np.ndarray or cp.ndarray): The input matrix to be cropped.
+        axis (tuple, optional): The axes along which cropping is performed. Default is (0,1).
+        centre (tuple, optional): Coordinates of the centre of the cropped matrix.
+                                  Defaults to the centre of the original matrix.
+        crop_size (tuple, optional): Size of the cropped matrix (height, width).
+                                     Defaults to half of the original size.
 
-    original_matrix: cp.ndarray or np.ndarray
+    Returns:
+        np.ndarray or cp.ndarray: Cropped submatrix.
 
-    return: 
-        a matrix with np.ndarray
-
+    Raises:
+        ValueError: If the crop size is invalid or exceeds matrix bounds.
     """
-    if isinstance(original_matrix, cp.ndarray):
-        image = cp.asnumpy(original_matrix)
-    else: image = original_matrix
-    px, py = image.shape
+
+    shape = original_matrix.shape
+    ndim = len(shape)
+
+    # Validate axis
+    if len(axis) != 2 or any(a >= ndim for a in axis):
+        raise ValueError(f"Invalid axis {axis} for a {ndim}-dimensional array.")
+
+    # Extract the relevant dimensions
+    px, py = shape[axis[0]], shape[axis[1]]
+
+    # Default crop size (half of the original matrix)
     if crop_size is None:
-        crop_size = (px//2, py//2)
+        crop_size = (px // 2, py // 2)
+
+    # Default centre (middle of the matrix)
     if centre is None:
-        centre = (px//2, py//2)
-    start_row = int(centre[0] - crop_size[0] // 2)
-    end_row = int(start_row + crop_size[0])
-    start_col = int(centre[1] - crop_size[1] // 2)
-    end_col = int(start_col + crop_size[1])
-    if start_row >= 0 and start_col >= 0:
-        cropped_matrix = image[start_col:end_col, start_row:end_row]
+        centre = (px // 2, py // 2)
+
+    # Compute cropping indices
+    start_row, end_row = max(0, centre[0] - crop_size[0] // 2), min(px, centre[0] + crop_size[0] // 2)
+    start_col, end_col = max(0, centre[1] - crop_size[1] // 2), min(py, centre[1] + crop_size[1] // 2)
+
+    # Crop the matrix along the specified axes
+    slicing = [slice(None)] * ndim  # Create a full slicing list
+    slicing[axis[1]] = slice(start_row, end_row)
+    slicing[axis[0]] = slice(start_col, end_col)
+
+    return original_matrix[tuple(slicing)]
+
+
+def expand_matrix(matrix, mode='x'):
+    """
+        Expand the matrix by combining it with its flipped versions.
+    
+        Parameters:
+        - matrix: The input 2D matrix.
+        - mode: The type of expansion ('x' or 'y'), which 'x' represnts the matrix is expanded along the x-axis, and 'y' represents the matrix is expanded along the y-axis.
+    
+        Returns:
+        - A new matrix expanded based on the specified mode.
+    """
+    y_flipped = np.flip(matrix, axis=1)
+    x_flipped = np.flip(matrix, axis=0)
+    both_flipped = np.flip(matrix, axis=(0, 1))
+    
+    if mode == 'x':
+        top_row = np.hstack((-both_flipped, -x_flipped))
+        bottom_row = np.hstack((y_flipped, matrix))
+    elif mode == 'y':
+        top_row = np.hstack((-both_flipped, x_flipped))
+        bottom_row = np.hstack((-y_flipped, matrix))
     else:
-        print(f'The potential cropped size of matrix is out the range!!!')
-        
-    return cropped_matrix
-
-def expand_matrix(array, new_shape):
-  """Expands a 2D array to a new shape with zeros padding.
-
-  Args:
-    array: The original 2D array.
-    new_shape: The desired new shape as a tuple (rows, cols).
-
-  Returns:
-    The expanded array with zeros padding.
-  """
-
-  # Calculate the padding required in each dimension.
-  pad_top, pad_bottom = (new_shape[0] - array.shape[0]) // 2, (new_shape[0] - array.shape[0]) - (new_shape[0] - array.shape[0]) // 2
-  pad_left, pad_right = (new_shape[1] - array.shape[1]) // 2, (new_shape[1] - array.shape[1]) - (new_shape[1] - array.shape[1]) // 2
-
-  # Create a new array with zeros and place the original array in the center.
-  expanded_array = np.zeros(new_shape)
-  expanded_array[pad_top:pad_top + array.shape[0], pad_left:pad_left + array.shape[1]] = array
-
-  return expanded_array
+        raise ValueError("Invalid mode. Use 'x' or 'y'.")
+    return np.vstack((top_row, bottom_row))
 
 def normalize_array(array):
     """
@@ -1322,10 +1345,12 @@ def plot_image(DPC_imgs, properties=None):
             else: image.append(DPC_imgs[i]) 
                 
             if properties['cropping image'][0] == True:
-                image[i] = crop_matrix(image[i], properties['cropping image'][1], properties['cropping image'][2])
+                image[i] = crop_matrix(image[i], (0, 1), properties['cropping image'][1], properties['cropping image'][2])
 
         row = int(np.sqrt(len(image)))       
         column = len(image)//row
+        if row*column < len(image):
+            column += 1
         fig, axs =  plt.subplots(row, column, 
                                  figsize=(properties['figsize']*column, a + properties['figsize'])) 
         
@@ -1384,7 +1409,7 @@ def plot_image(DPC_imgs, properties=None):
         else: image = DPC_imgs
                 
         if properties['cropping image'][0]:
-            image = crop_matrix(image, properties['cropping image'][1], properties['cropping image'][2])
+            image = crop_matrix(image,(0,1), properties['cropping image'][1], properties['cropping image'][2])
                 
         if mode =="Diffraction":
             if np.issubdtype(image.dtype, np.complex128):
@@ -1419,64 +1444,6 @@ def plot_image(DPC_imgs, properties=None):
             plt.savefig(fname=properties['saving path']+properties['image format'], dpi=properties['dpi'], transparent=True)
         plt.show()
 
-def FFT_image(FFT, min_distance, threshold_abs, num_peaks, reciprocal_res, print_d= True):    
-    """
-    Args:
-    
-        FFT: cp.array, the Fourier transformation of an image (matrix)
-        min_distance: float, the minimum distance distinguished between two spots
-        threshold_abs: float, the minimum intensity of spots for detecting
-        num_peaks: int, the maximum number of peaks
-        reciprocal_res: float, the resolution in spacial frequency domain
-    
-    Return:
-       float: d_spacing in unit of nm
-    
-    """          
-    pixelsize = FFT.shape[0]
-    #make sure the imported data has a format of cupy.array
-    if isinstance(FFT, cp.ndarray):
-        FFT = cp.asnumpy(FFT)
-    amplitude = np.log2(np.abs(FFT)+1)    
-    gaussian_1 = ndimage.gaussian_filter(amplitude, sigma=3)
-    gaussian_2 = ndimage.gaussian_filter(gaussian_1, sigma=1)
-    diffraction_image = gaussian_1 + 30*(gaussian_1 - gaussian_2)
-    coordinates = peak_local_max(diffraction_image, min_distance, threshold_abs, num_peaks=num_peaks)  
-
-    intensities = diffraction_image[coordinates[:, 0], coordinates[:, 1]]
-    max_intensity_index = np.argmax(intensities)
-
-# Get the coordinates and intensity of the peak with maximum intensity
-    Direct_beam_coordinate = (coordinates[max_intensity_index]-[pixelsize/2, pixelsize/2])*reciprocal_res
-    Direct_beam_intensity = intensities[max_intensity_index]
-    print(f"Peak with maximum intensity: Coordinate ({Direct_beam_coordinate[1]}, {Direct_beam_coordinate[0]}), Intensity {'%.0f'%Direct_beam_intensity}")
-    spots = []
-    for i in range (len(intensities)):
-        coor = coordinates[i]
-        x_coor = -(coor[1] - pixelsize/2)*reciprocal_res
-        y_coor = (coor[0] - pixelsize/2)*reciprocal_res
-        spots.append([x_coor, y_coor])
-    
-    extend_edge = 0.5*reciprocal_res*pixelsize
-    extend = [-extend_edge, extend_edge, -extend_edge, extend_edge]
-    plt.imshow(diffraction_image, extent=extend, vmin = np.max(np.log(np.abs(cp.asnumpy(FFT))+1))*0.5)
-    plt.scatter(np.array(spots)[:,0], np.array(spots)[:,1], c='red', alpha = .3, label = 'spots')
-    j=0
-    d_spacing = []
-    for i in range(len(spots)):    
-        if spots[i][1]>0:
-            j +=1
-            plt.annotate(str(j), spots[i], )
-            d = np.sqrt((spots[i][0])**2 + (spots[i][1])**2)
-            d_spacing.append([j, 1/d])
-            if print_d:
-                print(f'The spot {j} has a d_spacing of {(1/d):.2f} nm')
-        
-    plt.scatter(Direct_beam_coordinate[1], -Direct_beam_coordinate[0], c='yellow')
-    plt.xlabel('Spatial frequency [1/nm]')
-    plt.show()
-    return d_spacing
-
 
 
 def plot_fft(images, log=True, names=None):
@@ -1491,7 +1458,7 @@ def plot_fft(images, log=True, names=None):
     if not isinstance(images, list):
         images = [images]
         
-    if len(names) == len(images):
+    if names is not None and len(names) == len(images):
         name = 1
     else: name = 0
         
@@ -1513,14 +1480,14 @@ def plot_fft(images, log=True, names=None):
         p1 = ax1.imshow(image, cmap='gray')
         if name ==1:
             ax1.set_title(f"Image: {names[idx]}")
-        else: ax1.set_title(f"Image: {idx + 1}")
+        else: ax1.set_title(f"Image")
         fig.colorbar(p1, ax=ax1, shrink=0.8, extend='both')
         
         # Display the FFT magnitude spectrum
         p2 = ax2.imshow(magnitude, cmap='viridis')
         if name ==1:
             ax2.set_title(f"FFT: {names[idx]}")
-        else: ax2.set_title(f"FFT: {idx + 1}")
+        else: ax2.set_title(f"FFT")
         fig.colorbar(p2, ax=ax2, shrink=0.8, extend='both')
         
         # Adjust layout for better readability
@@ -1528,6 +1495,63 @@ def plot_fft(images, log=True, names=None):
         plt.show()
 
 
+def Bragg_points(points, given_point, threshold=0.05, pixel_size = 1):
+    """
+    Compute distances from each point in `points` to `given_point`, 
+    filter out points whose distance difference (relative to the previous accepted point)
+    is less than `threshold` (5% by default), and return the filtered points and distances.
+    
+    Parameters:
+        points (list or array): List of points (each a tuple or list of coordinates).
+        given_point (tuple or list): The reference point.
+        threshold (float): The minimum relative difference required between distances.
+        pixel_size: float, the real size of one pixel.
+    Returns:
+        filtered_points (list): The points that pass the filtering.
+        filtered_distances (list): Their corresponding distances.
+    """
+    # Convert input lists to NumPy arrays for vectorized operations.
+    points_arr = np.array(points)
+    pts_arr = points_arr * pixel_size
+    given_point_arr = np.array(given_point)
+    given_pt = given_point_arr * pixel_size
+    # Compute Euclidean distances from each point to the given point.
+    distances = np.linalg.norm(pts_arr - given_pt, axis=1)
+    distances = np.reciprocal(distances, where = (distances != 0))
+    # Sort points by distance.
+    sorted_indices = np.argsort(distances)
+    sorted_points = points_arr[sorted_indices]
+    sorted_distances = distances[sorted_indices]
+    
+    # Initialize lists to store the filtered points and distances.
+    filtered_points = []
+    filtered_distances = []
+    
+    # Iterate over sorted points and filter based on the relative difference.
+    for pt, d in zip(sorted_points, sorted_distances):
+        if not filtered_points:
+            # Always add the first point.
+            filtered_points.append(pt)
+            filtered_distances.append(d)
+        else:
+            last_d = filtered_distances[-1]
+            # If the last accepted distance is zero (i.e., the given point was in the list),
+            # then only add the new point if its distance is non-zero.
+            if last_d == 0:
+                if d != 0:
+                    filtered_points.append(pt)
+                    filtered_distances.append(d)
+            else:
+                # Only add the point if the distance difference is at least `threshold` times the last distance.
+                if (d - last_d) / last_d >= threshold:
+                    filtered_points.append(pt)
+                    filtered_distances.append(d)
+                    
+    print("Bragg points and their d-spacings:")
+    for pt, d in zip(filtered_points, filtered_distances):
+        print(np.round(pt), np.round(d,3))
+        
+    return filtered_points, filtered_distances
 
 def circle_mask(mask_size=(2048, 2048), center=(1024, 1024), radius=(10,20)):
     """
@@ -1630,13 +1654,15 @@ def find_radius(image, center=None, mask_size= None):
             zoom = widgets.IntSlider(min=1, max=int(max_r*2), value=int(max_r)), description='Zoom in:')
 
 
-def segmented_circular_masks(size, center, inner_radius, outer_radius, angle_ranges):
+def segmented_circular_masks(mask_size, nbins_radial, nbins_azimuthal, center, inner_radius, outer_radius, rotation=np.pi/4):
     """
     Creates multiple binary masks with ones within the specified circular segments.
-    The angle_ranges should be specified in degrees and count counter-clockwise.
-    
+    The rotation should be specified in radians.
+    The mask will be displayed in count counter-clockwise.
     Args:
-        size (tuple): (height, width) of the mask.
+        mask_size (tuple): (height, width) of the mask.
+        nbins_radial (int): the number of segments divided along radial direction.
+        nbins_azimuthal (int): the number of segments divided in the azimuthal plane.
         center (tuple): (center_x, center_y) coordinates of the circle's center.
         inner_radius (float): Inner radius of the circular segment.
         outer_radius (float): Outer radius of the circular segment.
@@ -1645,43 +1671,92 @@ def segmented_circular_masks(size, center, inner_radius, outer_radius, angle_ran
     Returns:
         np.ndarray: An array of binary masks with shape (n, height, width).
     """
-    height, width = size
-    center_x, center_y = center
-    
-    # Create a grid of coordinates
+    width, height = mask_size
+    # Determine the center
+    if center is not None:
+        center_x, center_y = center
+    else:
+        # Note: center_x corresponds to width and center_y to height.
+        center_x, center_y = width // 2, height // 2
+
+    # Create grid coordinates
     y, x = np.ogrid[:height, :width]
-    # Flip the y-coordinates to match Cartesian convention (y increases upwards)
+    # Adjust y-coordinates so that increasing y goes upward relative to the center
     flipped_y = center_y - y
-    # Compute the distance from each pixel to the center
+
+    # Compute distance from the center for each pixel
     dist_from_center = np.sqrt((x - center_x)**2 + flipped_y**2)
-    
-    # Create a ring mask for the circular segment
-    ring_mask = (dist_from_center >= inner_radius) & (dist_from_center <= outer_radius)
-    
-    # Compute angles of each pixel relative to the center
-    theta = np.arctan2(flipped_y, x - center_x)  # In radians, range [-π, π]
-    theta = (theta + 2 * np.pi) % (2 * np.pi)  # Normalize to range [0, 2π]
-    
-    # Convert angle ranges to radians
-    angle_ranges = np.asarray(angle_ranges)  # Ensure it's a NumPy array
-    angle_ranges_rad = np.deg2rad(angle_ranges)  # Convert to radians
-    
-    # Normalize input angle ranges to [0, 2π]
-    angle_ranges_rad = (angle_ranges_rad + 2 * np.pi) % (2 * np.pi)
-    
-    # Initialize the output masks array
-    masks = np.zeros((len(angle_ranges_rad), height, width), dtype=np.uint8)
-    
-    for i, (start_angle, end_angle) in enumerate(angle_ranges_rad):
-        # Handle wrap-around cases for angle ranges
-        if start_angle <= end_angle:
-            angle_mask = (theta >= start_angle) & (theta <= end_angle)
-        else:  # Wrap-around case (e.g., 315° to 45°)
-            angle_mask = (theta >= start_angle) | (theta <= end_angle)
+
+    # Compute the angle for each pixel (in radians, normalized to [0, 2π])
+    theta = np.arctan2(flipped_y, x - center_x)  # returns angle in [-π, π]
+    theta = (theta + 2 * np.pi) % (2 * np.pi)       # normalize to [0, 2π]
+
+    # ---------------------------
+    # Create azimuthal (angle) bins
+    # ---------------------------
+    segment_angle = 2 * np.pi / nbins_azimuthal
+    # Preallocate an array to store the angle ranges for each azimuthal bin
+    angle_ranges_rad = np.empty((nbins_azimuthal, 2))
+    for n in range(nbins_azimuthal):
+        start_angle = (rotation + n * segment_angle) % (2 * np.pi)
+        end_angle = (rotation + (n + 1) * segment_angle) % (2 * np.pi)
+        angle_ranges_rad[n] = [start_angle, end_angle]
+
+    # ---------------------------
+    # Create radial bins
+    # ---------------------------
+    radial_step = (outer_radius - inner_radius) / nbins_radial
+    # Preallocate an array to store the radial ranges for each bin
+    radial_bins = np.empty((nbins_radial, 2))
+    for i in range(nbins_radial):
+        r_min = inner_radius + i * radial_step
+        r_max = inner_radius + (i + 1) * radial_step
+        radial_bins[i] = [r_min, r_max]
+
+    # ---------------------------
+    # Create masks for each polar bin (combination of radial and azimuthal)
+    # ---------------------------
+    # Total number of regions = nbins_radial * nbins_azimuthal
+    masks = np.zeros((nbins_radial * nbins_azimuthal, height, width), dtype=bool)
+
+    region = 0
+    for i in range(nbins_radial):
+        # Create radial mask for the i-th radial bin
+        radial_mask = (dist_from_center >= radial_bins[i, 0]) & (dist_from_center < radial_bins[i, 1])
+        for j in range(nbins_azimuthal):
+            # Create azimuthal mask for the j-th angular bin
+            start_angle, end_angle = angle_ranges_rad[j]
+            if start_angle < end_angle:
+                azimuthal_mask = (theta >= start_angle) & (theta < end_angle)
+            else:
+                # Handle the wrap-around (e.g., when the bin spans the 2π -> 0 boundary)
+                azimuthal_mask = (theta >= start_angle) | (theta < end_angle)
         
-        # Combine the ring mask with the angle mask
-        masks[i] = (ring_mask & angle_mask).astype(np.uint8)
-    
+            # Combine the radial and azimuthal masks for the current region
+            masks[region] = radial_mask & azimuthal_mask
+            region += 1
+            
+    region_map = np.full((height, width), -1, dtype=int)
+    for idx in range(masks.shape[0]):
+        region_map[masks[idx]] = idx
+
+    # ---------------------------
+    # Plot the composite region map using a discrete colormap
+    # ---------------------------
+    plt.figure(figsize=(8, 8))
+    # Choose a colormap: 'tab10' works well for up to 10 regions; 'tab20' for more
+    if masks.shape[0] <= 10:
+        cmap = plt.get_cmap('tab10', masks.shape[0])
+    else:
+        cmap = plt.get_cmap('tab20', masks.shape[0])
+
+    # Display the region map; note vmin and vmax are set to include the background (-1)
+    im = plt.imshow(region_map, cmap=cmap, vmin=-1, vmax=masks.shape[0]-1)
+    cbar = plt.colorbar(im, ticks=range(-1, masks.shape[0]))
+    cbar.ax.set_yticklabels(['Background'] + [f"Region {i}" for i in range(masks.shape[0])])
+    plt.title("Polar Bin Regions")
+    plt.axis('off')
+    plt.show()
     return masks
 
 def radialAverage(IMG, cx, cy, w):
@@ -1730,178 +1805,233 @@ def coordinates_segment_in_DPC(collection, kBF, segment, wavelength, center, N=(
 
 class COMProcessor:
     """
-    It works for the integrated center of mass (iCOM) image reconstruction.
-    
-     The intensities of segments is extracted by simulating the behaviour of the segmented detector.
-        
-        The integrated intensity is calculated using:
-            I = sum( I(k, r) * D(k) ),
-            where D(k) is the detector response function
+    A class for integrated center of mass (iCOM) image reconstruction.
 
-        The CoM (center of mass) in the diffraction pattern recorded on the pixelated detector is expressed by:
-            K_CoM = sum( ki * Ii) / sum(Ii),
-            where the pixel position is ki = (ki_x, ki_y) and the intensity in each pixel is I(ki)
-            
+    The intensities of segments are extracted by simulating a segmented detector.
+    The integrated intensity is calculated as:
+        I = sum( I(k, r) * D(k) ),
+        where D(k) is the detector response function.
+
+    The CoM (center of mass) in the diffraction pattern is:
+        K_CoM = sum( ki * Ii ) / sum(Ii),
+        where ki = (ki_x, ki_y) is the pixel position and Ii is the intensity at that pixel.
+
     Usage example:
-        COM = COMProcessor(array_data, center=None, device='cpu') 
-        # you also can sign the <center>, other wise the center will be searched automatically.
-        segs, coms = COM.segment_intensities(inner, outer, [(-45,45), (45,135), (135,225), (225,315)])
-        # <segs> stores the intensities of virtural segmented images, which is np.ndarray with a shape of (N, px, py)
-        # <coms> stores the CoMx, CoMy
-        COM.visualize(plot='segments') 
-        # you also can see the mask and the center found, just changing the keyworks plot='masks' or 'center'
+        COM = COMProcessor(array_data, center=None, nbins_radial=4, nbins_azimuthal=4, device='cpu')
+        segs, coms = COM.segment_intensities(inner=10, outer=50)
+        # <segs> stores intensities of virtual segmented images, shape (N, nx, ny)
+        # <coms> stores CoMx, CoMy, shape (2, nx, ny)
+        COM.visualize(plot='segments')
+        # Options: plot='segments', 'center', or 'masks'
     """
-    def __init__(self, datacube, center, device: str = "cpu", return_cpu: bool = True):
-        
+    def __init__(self, datacube, center, nbins_radial, nbins_azimuthal, rotation=np.pi/4, device="cpu", return_cpu=True):
+        """
+        Initialize the COMProcessor.
+
+        Args:
+            datacube (ndarray): 4D array of shape (nx, ny, px, py) containing diffraction patterns.
+            center (tuple or None): (x, y) coordinates of the center; if None, computed automatically.
+            nbins_radial (int): Number of radial bins.
+            nbins_azimuthal (int): Number of azimuthal bins.
+            rotation (float): Rotation offset for azimuthal bins in radians (default: pi/4).
+            device (str): 'cpu' or 'gpu' for computation device (default: 'cpu').
+            return_cpu (bool): If True, return NumPy arrays; if False, return CuPy arrays when device='gpu' (default: True).
+        """
+        if datacube.ndim != 4:
+            raise ValueError("Datacube must be a 4D array with shape (nx, ny, px, py)")
         self.nx, self.ny, self.px, self.py = datacube.shape
         self.device = device.lower()
+        if self.device not in ["cpu", "gpu"]:
+            raise ValueError("Device must be either 'cpu' or 'gpu'")
         self.center = center
+        self.nbins_radial = nbins_radial
+        self.nbins_azimuthal = nbins_azimuthal
+        self.rotation = rotation
         self.return_cpu = return_cpu
         self.xp = np if self.device == "cpu" else cp
         self.datacube = self.xp.array(datacube)
-        self.average = self.xp.average(self.datacube, axis = (0, 1))
-        if self.device not in ["cpu", "gpu"]:
-            raise ValueError("Device must be either 'cpu' or 'gpu'")
-            
-    def _copy_to_device(self, array: np.ndarray) -> np.ndarray:
+        self.average = self.xp.average(self.datacube, axis=(0, 1))
+
+    def _return_array(self, array):
+        """
+        Return array in the desired format based on return_cpu.
+
+        Args:
+            array: Input array (NumPy or CuPy).
+
+        Returns:
+            ndarray: NumPy array if return_cpu=True, otherwise CuPy array if device='gpu'.
+        """
         if self.return_cpu:
             return array.get() if isinstance(array, cp.ndarray) else array
-        return cp.asarray(array)
-            
+        return array
+
     def find_center(self, image, mask_size=None):
-    # Check if the input image is 2-dimensional
+        """
+        Find the refined center of mass of an image.
+
+        Args:
+            image (ndarray): 2D diffraction pattern.
+            mask_size (float or None): Radius of the circular mask; if None, defaults to 80% of min distance to edge.
+
+        Returns:
+            tuple: (x, y) coordinates of the refined center.
+        """
         if image.ndim != 2:
             raise ValueError("Input image must be a 2-dimensional array")
-
-        # Get the dimensions of the image
         x, y = image.shape
 
+        # Initial CoM
         if self.device == 'cpu':
             center = ndimage.center_of_mass(image)
-        else: 
+        else:
             center = cpndimage.center_of_mass(image)
-            
-        rmax = min( center[0], center[1], abs(y - center[0]), abs(x - center[1]))
-        # Set the mask size (radius) based on the input or default to half of the image width
-        r = mask_size if mask_size is not None else rmax*0.8 
-        
+
+        rmax = min(center[0], center[1], abs(y - center[0]), abs(x - center[1]))
+        r = mask_size if mask_size is not None else rmax * 0.8
+
+        # Create circular mask
         mask = self.xp.zeros((self.px, self.py))
-        y, x = self.xp.ogrid[:self.py, :self.px]
-        distance_from_center = (x - center[1])**2 + (y - center[0])**2
-        mask[(distance_from_center <= r**2)] = 1
+        y_grid, x_grid = self.xp.ogrid[:self.py, :self.px]
+        distance_from_center = (x_grid - center[1])**2 + (y_grid - center[0])**2
+        mask[distance_from_center <= r**2] = 1
 
-        # Refine the center of mass using the mask
-        if self.device=='cpu':
+        # Refine CoM
+        if self.device == 'cpu':
             refined_center = ndimage.center_of_mass(image * mask)
-        else: refined_center = cpndimage.center_of_mass(image * mask)
-            
-        return refined_center[1], refined_center[0]    
+        else:
+            refined_center = cpndimage.center_of_mass(image * mask)
 
-    def segmented_circular_masks(self, inner_radius: float, outer_radius: float, angle_ranges: np.ndarray, flip_y: int = 1) -> np.ndarray:
-        
-        if type(angle_ranges) is list:
-            if self.device=='cpu':
-                angle_ranges = np.asarray(angle_ranges).reshape(-1, 2)
-            else: 
-                angle_ranges = cp.asarray(angle_ranges).reshape(-1, 2)
-        elif type(angle_ranges) is np.ndarray and self.device=='gpu':
-            angle_ranges = cp.array(angle_ranges)
-        elif type(angle_ranges) is cp.ndarray and self.device=='cpu':
-            angle_ranges = cp.asnumpy(angle_ranges)
-        else:
-            raise ValueError("Input angle_ranges for the segmented detector should be a LIST or NP.NDARRAY")
-            
+        return refined_center[1], refined_center[0]
+
+    def segmented_circular_masks(self, inner_radius, outer_radius):
+        """
+        Create segmented circular masks for radial and azimuthal bins.
+
+        Args:
+            inner_radius (float): Inner radius of the annular region.
+            outer_radius (float): Outer radius of the annular region.
+
+        Returns:
+            ndarray: Masks of shape (nbins_radial * nbins_azimuthal, px, py).
+        """
         height, width = self.px, self.py
-        if self.center is not None:
-            center_x, center_y = self.center
-        else:
-            self.center = self.find_center(self.average, mask_size=None)
-            center_x, center_y = self.center
-    
-        y, x = np.ogrid[:height, :width]
-        # Flip the y-coordinates to match Cartesian convention (y increases upwards)
-        flipped_y = flip_y * (center_y - y)
-        # Compute the distance from each pixel to the center
-        dist_from_center = np.sqrt((x - center_x)**2 + flipped_y**2)
-    
-        # Create a ring mask for the circular segment
-        ring_mask = (dist_from_center >= inner_radius) & (dist_from_center <= outer_radius)
-    
-        # Compute angles of each pixel relative to the center
-        theta = np.arctan2(flipped_y, x - center_x)  # In radians, range [-π, π]
-        theta = (theta + 2 * np.pi) % (2 * np.pi)  # Normalize to range [0, 2π]
-    
-        # Convert angle ranges to radians
-        angle_ranges = np.asarray(angle_ranges)  # Ensure it's a NumPy array
-        angle_ranges_rad = np.deg2rad(angle_ranges)  # Convert to radians
-    
-        # Normalize input angle ranges to [0, 2π]
-        angle_ranges_rad = (angle_ranges_rad + 2 * np.pi) % (2 * np.pi)
-    
-        # Initialize the output masks array
-        masks = np.zeros((len(angle_ranges_rad), height, width), dtype=np.uint8)
-    
-        for i, (start_angle, end_angle) in enumerate(angle_ranges_rad):
-            # Handle wrap-around cases for angle ranges
-            if start_angle <= end_angle:
-                angle_mask = (theta >= start_angle) & (theta <= end_angle)
-            else:  # Wrap-around case (e.g., 315° to 45°)
-                angle_mask = (theta >= start_angle) | (theta <= end_angle)
-        
-            # Combine the ring mask with the angle mask
-            masks[i] = (ring_mask & angle_mask).astype(np.uint8)
+        if self.center is None:
+            self.center = self.find_center(self.average)
+        center_x, center_y = self.center
+
+        y, x = self.xp.ogrid[:height, :width]
+        flipped_y = center_y - y  # Cartesian convention: y increases upwards
+        dist_from_center = self.xp.sqrt((x - center_x)**2 + flipped_y**2)
+        theta = self.xp.arctan2(flipped_y, x - center_x)
+        theta = (theta + 2 * self.xp.pi) % (2 * self.xp.pi)  # Normalize to [0, 2π]
+
+        segment_angle = 2 * self.xp.pi / self.nbins_azimuthal
+        angle_ranges_rad = self.xp.empty((self.nbins_azimuthal, 2))
+        for n in range(self.nbins_azimuthal):
+            start_angle = (self.rotation + n * segment_angle) % (2 * self.xp.pi)
+            end_angle = (self.rotation + (n + 1) * segment_angle) % (2 * self.xp.pi)
+            angle_ranges_rad[n] = [start_angle, end_angle]
+
+        radial_step = (outer_radius - inner_radius) / self.nbins_radial
+        radial_bins = self.xp.empty((self.nbins_radial, 2))
+        for i in range(self.nbins_radial):
+            r_min = inner_radius + i * radial_step
+            r_max = inner_radius + (i + 1) * radial_step
+            radial_bins[i] = [r_min, r_max]
+
+        masks = self.xp.zeros((self.nbins_radial * self.nbins_azimuthal, height, width), dtype=bool)
+        region = 0
+        for i in range(self.nbins_radial):
+            radial_mask = (dist_from_center >= radial_bins[i, 0]) & (dist_from_center < radial_bins[i, 1])
+            for j in range(self.nbins_azimuthal):
+                start_angle, end_angle = angle_ranges_rad[j]
+                if start_angle < end_angle:
+                    azimuthal_mask = (theta >= start_angle) & (theta < end_angle)
+                else:
+                    azimuthal_mask = (theta >= start_angle) | (theta < end_angle)
+                masks[region] = radial_mask & azimuthal_mask
+                region += 1
 
         return masks
 
     def merge_ronchgrams(self, crop_size=None):
         """
-        This code can merge all the Ronchigrams into one array for plotting.
+        Merge all diffraction patterns into a single array for plotting.
+
+        Args:
+            crop_size (int or tuple or None): Size to crop each pattern (width, height); if None, uses full size.
+
+        Returns:
+            ndarray: Merged array of shape (nx * crop_x, ny * crop_y).
+
+        Note:
+            Original code used an undefined 'crop_matrix'. Here, basic cropping is implemented.
+            Replace with custom crop_matrix if intended.
         """
         rows, cols = self.nx, self.ny
         if crop_size is None:
             crop_x, crop_y = self.px, self.py
         else:
-            if isinstance(crop_size, int):
-                crop_x, crop_y = crop_size, crop_size
-            else:
-                crop_x, crop_y = crop_size[0], crop_size[1]
-        cube = np.zeros((rows*crop_x, cols*crop_y))
+            crop_x, crop_y = (crop_size, crop_size) if isinstance(crop_size, int) else crop_size
+
+        cube = np.zeros((rows * crop_x, cols * crop_y))
+        center_x, center_y = self.center if self.center else (self.px // 2, self.py // 2)
+        half_x, half_y = crop_x // 2, crop_y // 2
+
         for i in range(rows):
             for j in range(cols):
-                cube[i*crop_x:(i+1)*crop_x, j*crop_y:(j+1)*crop_y] = crop_matrix(self.datacube[i, j], self.center, [crop_x, crop_y])
+                cube[i * crop_x:(i + 1) * crop_x, j * crop_y:(j + 1) * crop_y] = crop_matrix(self.datacube[i, j],(0,1), self.center, [crop_x, crop_y])
 
         return cube
 
-    def segment_intensities(self, inner_radius: float, outer_radius: float, angle_ranges: List[Tuple[float, float]]) -> np.ndarray:
+    def segment_intensities(self, inner_radius, outer_radius):
         """
-        The intensities of segments is extracted by simulating the behaviour of the segmented detector.
-        
-        The integrated intensity is calculated using:
-            I = sum( I(k, r) * D(k) ),
-            where D(k) is the detector response function
+        Extract segment intensities and compute CoM for each diffraction pattern.
 
-        The CoM (center of mass) in the diffraction pattern recorded on the pixelated detector is expressed by:
-            K_CoM = sum( ki * Ii) / sum(Ii),
-            where the pixel position is ki = (ki_x, ki_y) and the intensity in each pixel is I(ki)
+        Args:
+            inner_radius (float): Inner radius of the annular region.
+            outer_radius (float): Outer radius of the annular region.
+
+        Returns:
+            tuple: (segments, coms) where segments is shape (N, nx, ny) and coms is shape (2, nx, ny).
         """
-            
-        self.mask = self.segmented_circular_masks(inner_radius, outer_radius, angle_ranges) # mask is np.array with a shape of (N, px, py)
-        
-        num = len(angle_ranges)
-        qy,qx = self.xp.meshgrid(self.xp.arange(self.px), self.xp.arange(self.py))
+        self.mask = self.segmented_circular_masks(inner_radius, outer_radius)
+        num = self.nbins_radial * self.nbins_azimuthal
+        qx, qy = self.xp.meshgrid(self.xp.arange(self.px), self.xp.arange(self.py))  # Note: qx=x, qy=y
         self.segments = self.xp.zeros((num, self.nx, self.ny))
-        self.COMs = self.xp.zeros((2, self.nx, self.ny))
-        for i in tqdm(range(self.nx), desc="Extracting intensities", unit="row"):
-            for j in range(self.ny):
-                DP = self.datacube[i, j, :, :]
-                for n in range(num):                    
-                    self.segments[n, i, j] = self.xp.sum(DP * self.mask[n])
-                self.COMs[0, i, j] += self.xp.sum(DP * qx)
-                self.COMs[1, i, j] += self.xp.sum(DP * qy)
 
-        return self._copy_to_device(self.segments), self._copy_to_device(self.COMs)
+        if self.nbins_azimuthal >1 :
+            self.COMs = self.xp.zeros((2, self.nx, self.ny))
+            for i in tqdm(range(self.nx), desc="Extracting intensities", unit="row"):
+               for j in range(self.ny):
+                    DP = self.datacube[i, j, :, :]
+                    total_intensity = self.xp.sum(DP)
+                    if total_intensity > 0:
+                        self.COMs[0, i, j] = self.xp.sum(DP * qx) / total_intensity  # CoMx
+                        self.COMs[1, i, j] = self.xp.sum(DP * qy) / total_intensity  # CoMy
+                    else:
+                        self.COMs[0, i, j] = 0
+                        self.COMs[1, i, j] = 0
+                    for n in range(num):
+                        self.segments[n, i, j] = self.xp.sum(DP * self.mask[n])
+
+            return self._return_array(self.segments), self._return_array(self.COMs)
+        else: # when the nbins_azimuthal =1, representing the non-segmented mask
+            for i in tqdm(range(self.nx), desc="Extracting intensities", unit="row"):
+                for j in range(self.ny):
+                    DP = self.datacube[i, j, :, :]
+                    for n in range(num):
+                        self.segments[n, i, j] = self.xp.sum(DP * self.mask[n])
+            return self._return_array(self.segments), None
 
     def visualize(self, plot='segments'):
+        """
+        Visualize segments, center, or masks.
+
+        Args:
+            plot (str): 'segments', 'center', or 'masks' (default: 'segments').
+        """
         if plot == 'segments':
             segments = cp.asnumpy(self.segments)
             num = segments.shape[0]
@@ -1917,31 +2047,31 @@ class COMProcessor:
                         ax.axis('off')
             else:
                 plt.imshow(segments[0], cmap='viridis', interpolation='gaussian')
-                plt.title(f'Virtual image')
+                plt.title('Virtual image')
                 plt.axis('off')
-                        
             plt.tight_layout()
             plt.show()
-        elif plot=='center':
-            center_x, center_y = cp.asnumpy(self.center[0]), cp.asnumpy(self.center[1])
+        elif plot == 'center':
+            center_x, center_y = self.center if self.center else self.find_center(self.average)
+            center_x, center_y = cp.asnumpy(center_x), cp.asnumpy(center_y)
             fig, ax = plt.subplots()
-            ax.imshow(cp.asnumpy(self.average), cmap='gray', label='PACBED')
+            ax.imshow(cp.asnumpy(self.average), cmap='gray')
             ax.scatter(center_x, center_y, color='red', label='Refined Center')
-            circle = plt.Circle((center_x, center_y), radius=self.px*0.4, fill=False, color='red', linestyle='--')
+            circle = plt.Circle((center_x, center_y), radius=self.px * 0.4, fill=False, color='red', linestyle='--')
             ax.add_patch(circle)
             plt.legend()
             plt.show()
-        else:
+        else:  # 'masks'
             seg_mask = cp.asnumpy(self.mask)
             num = seg_mask.shape[0]
-            if num >1:
+            if num > 1:
                 m = int(np.sqrt(num))
                 n = m + 1 if m**2 < num else m
                 fig, axes = plt.subplots(m, n, sharex=True, sharey=True)
                 for i, ax in enumerate(axes.ravel()):
                     if i < num:
-                        pcm = ax.imshow(seg_mask[i], label=f'Segment {i+1}')
-                        ax.set_title(f'Virtual Mask for Segment {i+1}')
+                        pcm = ax.imshow(seg_mask[i])
+                        ax.set_title(f'Mask {i+1}')
                         fig.colorbar(pcm, ax=ax, shrink=0.9)
                         ax.axis('off')
             else:
@@ -2023,7 +2153,7 @@ def DFT_analysis(image, properties=None):
     fig, axs = plt.subplots(1, 3 if inverse else 2, figsize=(properties['figsize'] * (3 if inverse else 2),
                                                            properties['figsize']))
 
-    fft_for_show = crop_matrix(diffraction_image*filters, [int(height /2), int(width /2)],
+    fft_for_show = crop_matrix(diffraction_image*filters,(0,1), [int(height /2), int(width /2)],
                                [height // Zoom_in, width // Zoom_in])
     X_crop, Y_crop = fft_for_show.shape
     axs[0].imshow(fft_for_show, cmap=color)
@@ -2121,7 +2251,7 @@ def find_local_max(image, points, neighbor_size, threshold=1):
                 else:
                     max_point = (max_coords[1], max_coords[0])                          
 
-                if sub_image[max_point[0], max_point[1]] > threshold*np.mean(crop_matrix(image, [int(sizex/4), int(sizey/4)], [int(sizex/2), int(sizey/2)])):
+                if sub_image[max_point[0], max_point[1]] > threshold*np.mean(crop_matrix(image,(0,1), [int(sizex/4), int(sizey/4)], [int(sizex/2), int(sizey/2)])):
                     coordinates.append(np.array([max_point[0] + start_x, max_point[1] + start_y]))
                 else: coordinates.append(np.array([x, y]))  
 
@@ -2234,59 +2364,82 @@ def line_intensity_profile(image, names, resolution, width=5, length_unit='nm', 
     return profiles_list
 
 
-def rotating_image(image):
+def rotating_image(image, angle, centerX, centerY, cropped_size):
     """
-    scipy.ndimage.rotate(image, angle, mode = 'constant')
+    Rotates and crops an image interactively.
+    
+    Parameters:
+    - image: The input image (2D numpy array)
+    - angle: The angle of rotation (degrees)
+    - centerX, centerY: The center of cropping
+    - cropped_size: turple, Size of the cropped image
+    - show_plot: Whether to display the plot (default: True)
+    
+    Returns:
+    - The cropped rotated image
     
     """
     if isinstance(image, cp.ndarray):
         image = cp.asnumpy(image)
-
-    def updating(angle, centerX, centerY, cropped_size):
-        X, Y = image.shape
-        rotated_img = ndimage.rotate(image, angle, mode = 'constant')
-        NX, NY = rotated_img.shape
-        if cropped_size<centerX/2 and cropped_size<centerY/2:
-            sizeX = sizeY = cropped_size
-        else: sizeX = sizeY = int(min(centerX, centerY))
         
-        length = (centerX-X//2)**2 + (centerY-Y//2)**2
-        if centerX != X//2 and centerY != Y//2:
-            kx = (centerX-X//2)
-            ky = (centerY-Y//2)
-            #slope = ky/kx
-            #Sangle = np.arctan(slope)
-            Sangle = (np.arctan2(np.abs(ky), np.abs(kx)) * (-2 * (kx < 0) + 1) + np.pi * (kx < 0)) * (-2 * (ky < 0) + 1)
-            Nslope = np.tan(-np.radians(angle)+Sangle)
-            if kx<0:
-                newX = NX//2 - int(np.sqrt(length/(1+Nslope**2)))
-            elif kx>0:
-                newX = NX//2 + int(np.sqrt(length/(1+Nslope**2)))
-            if ky <0:
-                newY = NY//2 - int(np.sqrt(length/(1+(1/Nslope)**2)))
-            elif ky>0:
-                newY = NY//2 + int(np.sqrt(length/(1+(1/Nslope)**2)))
+    X, Y = image.shape
+    rotated_img = ndimage.rotate(image, angle, mode = 'constant')
+    NX, NY = rotated_img.shape
+    if cropped_size[0] < NX and cropped_size[1] < NY:
+        sizeX, sizeY = cropped_size
+    else: 
+        sizeX = int(min(centerX, cropped_size[0]))
+        sizeY = int(min(centerY, cropped_size[1]))
+        
+    length = (centerX - X//2)**2 + (centerY - Y//2)**2
+    if centerX != X//2 and centerY != Y//2:
+        kx = (centerX-X//2)
+        ky = (centerY-Y//2)
+        #slope = ky/kx
+        #Sangle = np.arctan(slope)
+        Sangle = (np.arctan2(np.abs(ky), np.abs(kx)) * (-2 * (kx < 0) + 1) + np.pi * (kx < 0)) * (-2 * (ky < 0) + 1)
+        Nslope = np.tan(-np.radians(angle)+Sangle)
+        if kx<0:
+            newX = NX//2 - int(np.sqrt(length/(1+Nslope**2)))
+        elif kx>0:
+            newX = NX//2 + int(np.sqrt(length/(1+Nslope**2)))
+        if ky <0:
+            newY = NY//2 - int(np.sqrt(length/(1+(1/Nslope)**2)))
+        elif ky>0:
+            newY = NY//2 + int(np.sqrt(length/(1+(1/Nslope)**2)))
           
-        else: 
-            newX = NX//2
-            newY = NY//2
+    else: 
+        newX = NX//2
+        newY = NY//2
     
-        cropped = crop_matrix(rotated_img, [int(newX), int(newY)], [sizeX, sizeY])
-        croppedX, croppedY = cropped.shape
-        fig, axes =  plt.subplots(1,2, figsize=(16, 8))
-        axes[0].imshow(rotated_img)
-        axes[0].plot(newX, newY, marker='+', markersize=10, color='r')
-        axes[0].set_title(f'Rotating {round(angle,1)} degrees')
-        axes[1].imshow(cropped)
-        axes[1].plot(croppedX/2, croppedY/2, marker='+', markersize=10, color='r')
-        axes[1].set_title(f'Zoom in')
+    cropped = crop_matrix(rotated_img,(0,1), [int(newX), int(newY)], [sizeX, sizeY])
+    croppedX, croppedY = cropped.shape
 
-        return cropped
-    interact(updating, 
-             angle=widgets.FloatSlider(min = -45, max = 45, value = 0),
-             centerX = widgets.IntSlider(min = 0, max = image.shape[0], value = 16),
-             centerY = widgets.IntSlider(min = 0, max = image.shape[1], value = 16),
-             cropped_size = widgets.IntSlider(min = 16, max = image.shape[0]//2, value = 128)
+    fig, axes =  plt.subplots(1,2, figsize=(16, 8))
+    axes[0].imshow(rotated_img)
+    axes[0].plot(newX, newY, marker='+', markersize=20, color='r')
+    rect = patches.Rectangle((int(np.abs(newX-sizeX/2)), int(np.abs(newY-sizeY/2))), sizeX, sizeY, linewidth=2, edgecolor='r', facecolor='none')
+    axes[0].add_patch(rect)
+    axes[0].set_title(f'Rotating {round(angle,1)} degrees')
+    axes[1].imshow(cropped)
+    axes[1].plot(croppedX/2, croppedY/2, marker='+', markersize=20, color='r')
+    axes[1].set_title(f'Zoom in {int(X/sizeX)} times')
+    plt.show()
+    return cropped
+
+def interactive_rotating_image(image):
+    """
+    Interactive Widget for Rotating Image
+    """
+    def wrapper(angle, centerX, centerY, cropX, cropY):
+        cropped_size = (cropX, cropY)
+        return rotating_image(image, angle, centerX, centerY, cropped_size)    
+    interact(wrapper, 
+             angle=widgets.FloatSlider(min = -45, max = 45, value = 0, layout=widgets.Layout(width='80%')),
+             centerX = widgets.IntSlider(min = 0, max = image.shape[0], value = image.shape[0]//2, layout=widgets.Layout(width='80%')),
+             centerY = widgets.IntSlider(min = 0, max = image.shape[1], value = image.shape[1]//2, layout=widgets.Layout(width='80%')),
+             cropX = widgets.IntSlider(min = 16, max = image.shape[0], value = image.shape[0]//8, layout=widgets.Layout(width='80%')),
+             cropY = widgets.IntSlider(min = 16, max = image.shape[1], value = image.shape[1]//8, layout=widgets.Layout(width='80%'))
             )
     
 def plot_fields_map(CoMx, CoMy, resolution, arrow_size=200, threshold=0.8, unit="nm", cmap='red'):
@@ -2464,6 +2617,7 @@ class PoreAnalyzer:
         ax6.set_xlabel("Intensity (a.u.)")
         ax6.set_ylabel("Frequency")
         plt.show()
+        
     def analyze_pores(self, blur_size=1, min_gap=20, min_pore_size=16, bins=20, mask_shrink=2):
         def update_conditions(blur_size, min_gap, min_pore_size, bins, mask_shrink):
             self.updating_parameters(blur_size, min_gap, min_pore_size, bins, mask_shrink)

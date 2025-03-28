@@ -3,7 +3,8 @@ import matplotlib.pyplot as plt
 from scipy.fft import fft2, fftshift, ifftshift, ifft2, fftfreq
 import pandas as pd
 from phase_STEM import tools
-from scipy.ndimage import gaussian_filter, median_filter
+
+import scipy.ndimage as ndimage
 from phase_STEM import tools, analysis
 import cupy as cp
 
@@ -183,8 +184,8 @@ def adaptive_Fourier_filter(image, mag=50, limit=4, disk_size = 10, neighbor_siz
     fft_transform = fftshift(fft2(padded_img))
     magnitude_fft = np.log(1+np.abs(fft_transform ))
 
-    gaussian_1= gaussian_filter(magnitude_fft, sigma=(5,5), order=0)
-    gaussian_2= gaussian_filter(gaussian_1, sigma=(1,1), order=0)
+    gaussian_1= ndimage.gaussian_filter(magnitude_fft, sigma=(5,5), order=0)
+    gaussian_2= ndimage.gaussian_filter(gaussian_1, sigma=(1,1), order=0)
     mag_fft2 = gaussian_2 + mag*(gaussian_1 - gaussian_2)
     diffraction = tools.linscale(mag_fft2)
     # Interactively pick four points
@@ -249,6 +250,189 @@ def adaptive_Fourier_filter(image, mag=50, limit=4, disk_size = 10, neighbor_siz
 
     return np.real(filtered_result)
 
+
+def compute_radial_profile(image):
+    """
+    Compute the radial (rotational) average of a 2D image.
+    
+    Args:
+        image (ndarray): 2D numpy array
+    
+    Returns:
+        tuple: (radialprofile, r_int) where radialprofile is the radial average
+               and r_int is the integer radius array
+    """
+    if not isinstance(image, np.ndarray) or image.ndim != 2:
+        raise ValueError("Input must be a 2D numpy array")
+    
+    y, x = np.indices(image.shape)
+    center = np.array([image.shape[0]/2.0, image.shape[1]/2.0])
+    r = np.sqrt((x - center[1])**2 + (y - center[0])**2)
+    r_int = r.astype(np.int32)
+    
+    # Sum pixel values in bins and count number of pixels per bin
+    tbin = np.bincount(r_int.ravel(), image.ravel())
+    nr = np.bincount(r_int.ravel())
+    radialprofile = tbin / (nr + 1e-8)  # Add small constant to avoid division by zero
+    
+    return radialprofile, r_int
+
+def adaptive_Braggmask(image, sigma= 1, frequency_cutoff=0.6, a=5, b=0, radius=2, rescale=5, min_distance=3):
+    """
+    Adaptive Fourier filtering as described in the paper:
+    G. Möbus, G. Necker & M. Ruhle. Adaptive Fourier-filtering technique for quantitative
+    evaluation of high-resolution electron micrographs of interfaces. Ultramicroscopy 49 (1993) 46-65.
+    
+    Parameters:
+        image (ndarray): 2D numpy array (grayscale input image)
+        frequency_cutoff (float): Frequency cutoff for bandpass filter (0 to 1)
+        a (float): Multiplier for the threshold function (adjusts sensitivity)
+        b (float): Offset added to the threshold function
+        radius (int): Radius for structuring element
+        rescale (int): Scaling factor for concentric spot expansion
+        min_distance (float): Minimum distance between centers
+    
+    Returns:
+        filtered_image: 2D numpy array
+        centres: dictionary, keys: coordinates of points; values: coordinates of mask
+        mask_rescaled: 2D numpy array, dilated mask
+        
+    """
+    if not isinstance(image, np.ndarray) or image.ndim != 2:
+        raise ValueError("Input must be a 2D numpy array")
+    
+    # Compute Fourier transform
+    px, py = image.shape
+    F = fftshift(fft2(image))
+    
+    # Create bandpass filter and apply to magnitude spectrum
+    try:
+        mask = pure_bandpass((px, py), [0, frequency_cutoff], center=None)
+    except AttributeError:
+        # Fallback if psutil.EMFilters is not available
+        mask = np.ones((px, py))  # Simple fallback
+    
+    mag = np.abs(F) 
+    mag = ndimage.gaussian_filter(mag, sigma)
+    
+    # Compute radial profile and threshold
+    radial_profile, r_int = compute_radial_profile(mag)
+    threshold = a * radial_profile[r_int] + b # try the skimage.restoration.rolling_ball to get the background
+    
+    # Create binary mask
+    mask_binary = (mag > threshold).astype(np.float32)
+    
+    # Create structuring element for morphological operations
+    x, y = np.ogrid[-radius:radius+1, -radius:radius+1]
+    structuring_element = (x**2 + y**2 <= radius**2).astype(np.float32)
+    
+    # Perform dilation
+    dilated = ndimage.binary_dilation(mask_binary, structure=structuring_element)
+    
+    # Concentric rescaling of spots
+    binary_for_label = dilated > 0.1
+    labeled, num_features = ndimage.label(binary_for_label)
+    # create a mask 
+    mask_rescaled = np.copy(dilated)
+
+    centre_x, centre_y = np.ogrid[-rescale:rescale+1, -rescale:rescale+1]
+    centre_mask = (centre_x**2 + centre_y**2 <= rescale**2).astype(np.float32)
+    centre_mask_coords = np.argwhere(centre_mask)
+    mask_rescaled[centre_mask_coords.T[0] + px//2 - rescale, centre_mask_coords.T[1] + py//2 - rescale] = 1
+    centre_mask_x = centre_mask_coords.T[0] + px//2 - rescale
+    centre_mask_y = centre_mask_coords.T[1] + py//2 - rescale
+    # build a dictionary to keep the coordinate of Bragg's spots and the corresponding mask
+    # add the "frequency = 0" as the first centre
+    centres = {(px//2, py//2) : (centre_mask_x, centre_mask_y)} # coordinates : mask
+    # Pre-calculate coordinate arrays
+    y_coords_all, x_coords_all = np.indices(image.shape)
+    
+    frequency = (px**2/4 + py**2/4) * frequency_cutoff**2
+    frequency_sqrt = int(np.sqrt(frequency))
+
+    min_distance_sq = min_distance**2
+    
+    # Process each connected component
+    for i in range(1, num_features + 1):
+        component_mask = (labeled == i)
+        coords = np.argwhere(component_mask)
+        if coords.size == 0:
+            continue
+            
+        # Calculate centroid
+        cy, cx = np.mean(coords, axis=0)
+        r_sq = (cx - px//2)**2 + (cy - py//2)**2
+        
+        if r_sq < frequency:
+            # Check distance to existing centers
+            too_close = False
+            for p in centres.keys():
+                x_exist, y_exist = p
+                distance_sq = (cx - x_exist)**2 + (cy - y_exist)**2
+                if distance_sq < min_distance_sq:
+                    too_close = True
+                    break
+            
+            if not too_close:
+                mask_indices = component_mask[y_coords_all, x_coords_all]
+                y_coords = y_coords_all[mask_indices]
+                x_coords = x_coords_all[mask_indices]
+                
+                # Apply rescaling based on distance from centroid
+                x_shift = np.where(x_coords < cx, -rescale, rescale)
+                y_shift = np.where(y_coords < cy, -rescale, rescale)
+                
+                # Ensure new coordinates stay within bounds
+                new_x = np.clip(x_coords + x_shift, 0, image.shape[1] - 1)
+                new_y = np.clip(y_coords + y_shift, 0, image.shape[0] - 1)
+                mask_rescaled[new_y, new_x] = 1
+                centres[(cx, cy)] = (np.append(new_x, x_coords), np.append(new_y, y_coords))
+    
+    # Final dilation
+    mask_rescaled = ndimage.binary_dilation(mask_rescaled, structure=structuring_element)
+    
+    # Apply filter and inverse transform
+    F_filtered = F * mask_rescaled * mask
+    filtered_image = np.real(ifft2(ifftshift(F_filtered)))
+    
+    # Visualization
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    
+    axes[0, 0].imshow(image, cmap='gray')
+    axes[0, 0].set_title("Original Image")
+    axes[0, 0].axis('off')
+    
+    axes[0, 1].imshow(tools.crop_matrix(np.log(mag+1), (0,1), [px//2, py//2], [frequency_sqrt*2, frequency_sqrt*2]), cmap='gray')
+    delta_x = px//2 - frequency_sqrt
+    delta_y = py//2 - frequency_sqrt
+    
+    for p in (centres.keys()):
+        axes[0, 1].scatter(p[0] - delta_x, p[1] - delta_y, c='m', s=10)
+    circle1 = plt.Circle((px//2 - delta_x, py//2 - delta_y), radius = frequency_sqrt, 
+                       fill=False, color='r', linestyle='--', linewidth=2)
+    axes[0, 1].add_patch(circle1)
+    axes[0, 1].set_title("Magnitude Spectrum\n(log scale)")
+    axes[0, 1].axis('off')
+    
+    axes[1, 0].imshow(filtered_image, cmap='gray')
+    axes[1, 0].set_title("Filtered Image")
+    axes[1, 0].axis('off')
+    
+    axes[1, 1].imshow(np.log(mag+1)* mask_rescaled * mask, cmap='viridis')
+    for p in (centres.keys()):
+        axes[1, 1].scatter(p[0], p[1], c='white', s=10)
+    circle2 = plt.Circle((px//2 , py//2 ), radius = frequency_sqrt, 
+                       fill=False, color='w', linestyle='--', linewidth=2)
+    axes[1, 1].add_patch(circle2)
+    axes[1, 1].set_title("Mask overlaps on Original DFT")
+    axes[1, 1].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return filtered_image, centres, mask_rescaled
+
+
 def elliptical_Moffat_filter(size,sigma1,sigma2,theta, beta):
         """
         Defines an elliptical Moffat distribution, which is a continuous probability distribution 
@@ -279,7 +463,7 @@ def elliptical_Moffat_filter(size,sigma1,sigma2,theta, beta):
         b = (np.sin(theta)*np.cos(theta))*(1/(sigma1**2) - 1/(sigma2**2))
         c = (np.sin(theta)**2)/(sigma1**2) + (np.cos(theta)**2)/(sigma2**2)
         denominator = 1/(1 + (a*kx**2 + 2*b*kx*ky + c*ky**2) )**beta
-        mask_fourierspace = np.fft.fftshift(denominator)
+        mask_fourierspace = fftshift(denominator)
         return mask_fourierspace
 
 def elliptical_Fourier_filter(size,sigma1,sigma2,theta):
@@ -345,7 +529,7 @@ def gaussian_bandpass(img, space='real', mode="low", cutoff_ratio=0.1):
     return filtered_fshift
 
 def gaussian_filter(
-       size, cut_ratio, bandpass ='low'
+       size, cutoff_ratio, highpass =True
     ):
     """
     It is to build a 2D array Gaussian filter for image processing in the Fourier space.
@@ -368,23 +552,19 @@ def gaussian_filter(
     qra = np.sqrt(qxa**2 + qya**2)
 
     env = np.ones_like(qra)
-    if bandpass == 'high':
-        q_highpass = max_freq * (1 - cut_ratio)
-        env *= 1 -np.exp(- (qra**2) / (2 * (q_highpass**2)))
-    elif bandpass == 'low':
-        q_lowpass = max_freq * cut_ratio
-        env *= np.exp(- (qra**2) / (2 * (q_lowpass**2)))
-    else:
-        raise ValueError("Choosing the type of bandpass: 'low' or 'high'.")
+    q_lowpass = max_freq * cut_ratio
+    env *= np.exp(- (qra**2) / (2 * (q_lowpass**2)))
+    if highpass:
+        env = 1 -env
 
     return env
 
 def butterworth_filter(
-       size, cut_ratio, bandpass ='low', order =2, squared_butterworth = False
+       size, cutoff_ratio, highpass =True, order =2, squared_butterworth = False
            ):
     """
     It is to build a 2D array Butterworth filter for image processing in the Fourier space.
-
+    You also can use 'skimage.filters.butterworth' instead.
     Args:
         size: Tuple, determing the shape of the built filter.
         cut_ratio: float, the cutoff frequency
@@ -406,14 +586,11 @@ def butterworth_filter(
     qra = np.sqrt(qxa**2 + qya**2)
 
     env = np.ones_like(qra)
-    if bandpass == 'high':
-        q_highpass = max_freq * (1 - cut_ratio)
-        env *= 1 - 1 / (1 + (qra / q_highpass) ** (2 * order))
-    elif bandpass == 'low':
-        q_lowpass = max_freq * cut_ratio
-        env *= 1 / (1 + (qra / q_lowpass) ** (2 * order))
-    else:
-        raise ValueError("Choosing the type of bandpass: 'low' or 'high'.")
+    q_lowpass = max_freq * cutoff_ratio
+    env *= 1 / (1 + (qra / q_lowpass) ** (2 * order))
+    if highpass:
+        env = 1 - env
+    
     if squared_butterworth:
         env = np.sqrt(env)
     return env
@@ -506,7 +683,7 @@ def average_background(img, delta=5):
     f_noedge = img * noedgebw
     
     # Light filter the FFT for processing
-    f_img = median_filter(np.abs(f_noedge), size=5)
+    f_img = ndimage.median_filter(np.abs(f_noedge), size=5)
     
     # Convert the FFT data into flattened real magnitude data
     f_mag = f_img.flatten()
@@ -565,7 +742,7 @@ def avg_background(img, space ='real', delta=5):
         f_noedge = fftshift(fft2(noedgeimg))
     else: f_noedge= img*noedgebw
     # Light filter the FFT for processing
-    f_img = median_filter(np.abs(f_noedge),size=5)
+    f_img = ndimage.median_filter(np.abs(f_noedge),size=5)
 
     # Convert the FFT data into flattened real magnitude data
     f_mag = f_img.flatten()
@@ -638,7 +815,7 @@ def wiener_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=
     wf[wf<0] = 0
     if lowpass_cutoff !=0:
         mask_size = lowpass_cutoff * px/img.shape[0]
-        mask = tools.circle_mask((px, py), (px//2, py//2), radius = (0, 0.5*px*mask_size))
+        mask = tools.circle_mask((px, py), (px//2, py//2), radius = (0, px*mask_size))
     else:
         mask = 1
         
@@ -661,7 +838,8 @@ def wiener_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=
 def abs_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2):
     """
     Average background subtraction filter function (ABS) filter for HRTEM images
-
+    reference:
+        https://onlinelibrary.wiley.com/doi/pdf/10.1046/j.1365-2818.1998.3070861.x
     Args:
         img: the image data array
         delta: a threashold for background averaging
@@ -671,7 +849,7 @@ def abs_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2):
     Return: 
         img_absf, img_diff: filtered image array and difference
     """
-    pad_x, pad_y = 16,16
+    pad_x, pad_y = 0, 0
     
     padded_img = np.pad(img, ((pad_x, pad_x), (pad_y, pad_y)), mode='constant', constant_values=0)
     px, py = padded_img.shape
@@ -687,7 +865,7 @@ def abs_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2):
     
     if lowpass_cutoff !=0:
         mask_size = lowpass_cutoff * px/img.shape[0]
-        mask = tools.circle_mask((px, py), (px//2, py//2), radius = (0, 0.5*px*mask_size))
+        mask = tools.circle_mask((px, py), (px//2, py//2), radius = (0, px*mask_size))
     else:
         mask = 1
         
