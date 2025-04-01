@@ -9,29 +9,191 @@ import zarr
 import dask.array as da
 import mrcfile
 from PIL import Image, ImageDraw, ImageFont
-from phase_STEM import tools
-import hyperspy.api as hs 
+from phase_STEM import tools, EMFilters
+#import hyperspy.api as hs 
+from rsciio.emd import file_reader as emd_reader
+from rsciio.digitalmicrograph import file_reader as dm_reader
+from rsciio.mrc import file_reader as mrc_reader
+from rsciio.tia import file_reader as tia_reader
 from matplotlib_scalebar.scalebar import ScaleBar
 
-def find_files(root, pattern):
+def find_files(root, file_formats):
     """
-    This function is to search files with an extension 'pattern' from a folder 'root', as well as the subfolders
+    Searches for files with specific extensions in a given directory, including subfolders.
     
     Args:
-        root: string, the address of the target folder
-        pattern: string, the format of the file, e.g. '.emd', '.dm3'
+        root (str): The path to the directory.
+        file_formats (tuple): A tuple of file extensions to search for.
     
-    Return: 
-    a list with the files searched from the folder
+    Returns: 
+        list: A list of file paths matching the specified extensions.
     """
     matches = []
-  
-    for path, dirnames, filenames in os.walk(root):
+    for path, _, filenames in os.walk(root):
         for filename in filenames:
-            if filename.endswith(pattern):
-                file_path = os.path.join(path, filename)
-                matches.append(file_path)    
+            if filename.endswith(file_formats):
+                matches.append(os.path.join(path, filename))    
     return matches
+
+def loading_data(file_path):
+    """
+    Loads data from a given file and organizes it into a dictionary.
+
+    Args:
+        file_path (str): The path to the data file.
+
+    Returns:
+        tuple: A dictionary of datasets, resolution details, and mode.
+    """
+    file_extension = os.path.splitext(file_path)[1][1:].lower()
+    mode = tools.image_mode(file_path)
+    library = {}
+    resolution, unit = 1, 'px'
+    
+    readers = {
+        'emd': emd_reader,
+        'dm3': dm_reader,
+        'dm4': dm_reader,
+        'mrc': mrc_reader,
+        'ser': tia_reader,
+        'emi': tia_reader
+    }
+    
+    if file_extension in readers:
+        data = readers[file_extension](file_path)
+        resolution = data[0]['axes'][0]['scale']
+        unit = data[0]['axes'][0]['units']
+        for i in range (len(data)):
+            library[data[i]['metadata']['General']['title']] = data[i]['data']
+    elif file_extension in ('h5', 'hdf5'):
+        return h5_reader(file_path)  # Directly return dictionary for HDF5
+    else:
+        raise ValueError(f"Unsupported file format: {file_extension}")
+    
+    return library, (resolution, unit), mode
+
+def h5_reader(file_path):
+    """
+    Read an HDF5 file and extract all datasets into a dictionary.
+
+    Args:
+        file_path (str): Path to the HDF5 file.
+
+    Returns:
+        dict: Dictionary with dataset names as keys and contents as values.
+    """
+    def head_tree(node, indent=0):
+        dictionary = {}
+        if isinstance(node, h5py.Group):
+            for key in node.keys():
+                dictionary.update(head_tree(node[key], indent + 2))
+        elif isinstance(node, h5py.Dataset):
+            name = f"{' ' * (indent + 2)}Dataset: {node.name}"
+            values = node[()]
+            dictionary[name] = values
+        return dictionary
+
+    result_dict = {}
+    with h5py.File(file_path, "r") as h5f:
+        for key in h5f.keys():
+            result_dict.update(head_tree(h5f[key]))
+    return result_dict
+
+class BatchProcessor:
+    """
+    Batch converting datasets into .png images or .mrc files.
+    Example:
+    # Instantiate the ImageProcessor class
+    processor = BatchProcessor(colormap='gray', max_images=10)
+
+    # Define the directory containing images and the file formats
+    image_directory = "path/to/your/images"
+    file_formats = ["dm3", "emd"]  # Example file formats
+
+    # Convert images to PNG format
+    processor.batch_conversion(file_formats, image_directory, output_format='png')
+
+    # Convert images to MRC format
+    processor.batch_conversion(file_formats, image_directory, output_format='mrc')
+    """
+    def __init__(self, colormap='gray', max_images=50):
+        self.colormap = colormap
+        self.max_images = max_images
+        self.excluded_titles = {'dDPC', 'DF4_A', 'DF4_B', 'DF4_C', 'DF4_D', 'A-C', 'B-D', 'DF4 SUM'}
+
+    def convert_into_images(self, image_dict, saving=None):
+        """
+        Plots images from a dictionary and optionally saves them.
+        
+        Args:
+            image_dict (tuple): Tuple containing image library, resolution/unit, and mode.
+            saving (str or None): Directory path to save figures.
+        """
+        library, (resolution, unit), mode = image_dict
+
+        if unit == "Å":
+            unit = "nm"
+            resolution *= 0.1
+
+        unit_type = 'si-length-reciprocal' if mode == 'DIFFRACTION' else 'si-length'
+
+        if saving and not os.path.exists(saving):
+            os.makedirs(saving)
+
+        for i, (title, image) in enumerate(library.items()):
+            if i >= self.max_images:
+                break
+            if title == 'iDPC' or title not in self.excluded_titles:
+                if title == 'iDPC':
+                    image = EMFilters.gaussian_bandpass(image, space='real', highpass=True, cutoff_ratio=0.01)
+                
+                fig, ax = plt.subplots(figsize=(6, 6))
+                image = np.log(np.abs(image) + 1) if mode == 'DIFFRACTION' else image
+                ax.imshow(image, cmap=self.colormap)
+                
+                scale_bar = ScaleBar(
+                    resolution, 
+                    units=unit,
+                    dimension=unit_type,
+                    length_fraction=0.2, 
+                    location='lower left', 
+                    scale_loc='top'
+                )
+                ax.add_artist(scale_bar)
+                ax.set_title(title)
+                ax.axis('off')
+                plt.tight_layout()
+                
+                if saving:
+                    plt.savefig(os.path.join(saving, f"{title}.png"), format='png', dpi=600)
+                plt.close(fig)
+
+    def batch_conversion(self, file_formats, path, output_format='png'):
+        """
+        Converts images in specified formats to 'png' or 'mrc'.
+        
+        Args:
+            file_formats (list): List of file extensions.
+            path (str): Directory containing files.
+            output_format (str): Output format ('png' or 'mrc').
+        """
+        files = find_files(path, tuple(file_formats))
+        for file in files:
+            image_dict = loading_data(file)
+            
+            if output_format == 'png':
+                self.convert_into_images(image_dict, saving=os.path.splitext(file)[0])
+            elif output_format == 'mrc':
+                library, (resolution, unit), _ = image_dict
+                
+                for i, (title, image) in enumerate(library.items()):
+                    if i >= self.max_images:
+                        break
+                    if title == 'iDPC' or title not in self.excluded_titles:
+                        if title == 'iDPC':
+                            image = EMFilters.gaussian_bandpass(image, space='real', highpass=True, cutoff_ratio=0.01)
+                        save_as_mrc(image, resolution, unit, path, title)
+
 
 def get_image_intensity(image_path, crop_size = [False, (64,64), 128]):
     """
@@ -701,6 +863,8 @@ def correct_deadpixel_intensity(image, coordinate, axes=(0, 1), dead_pixel=2, ne
     
     return result
 
+
+
 def batch_save(matches, path):
     """
     This function is to convert images with formats '.dm3', '.emd' files into '.tif' format.
@@ -716,13 +880,13 @@ def batch_save(matches, path):
     for i in range (len(matches)):
         file = matches[i]
         name = os.path.splitext(os.path.basename(file))[0]
-        image = hs.load(file)
+        images, _, _ = loading_data(file)
         
-        mode = tools.image_mode(image)
-        parameters = tools.parameters_image(image, mode)
-        resolution = parameters[0]
-        pixelsize = parameters[1]
-        unit = parameters[2]
+        mode = tools.image_mode(file)
+        parameters = tools.get_info(file)
+        resolution = parameters['resolution']
+        pixelsize = parameters['pixel_size']
+        unit = parameters['unit']
         
         length_raw = round(0.4 + (resolution*pixelsize)/10)
         
@@ -731,19 +895,15 @@ def batch_save(matches, path):
             bar.append(abs(length_raw - scale))
         length = scalebar[bar.index(min(bar))]  
         
-        if len(image)==1:
+        if len(images)==1:
                 
-            if not isinstance(image, np.ndarray):
-                image = np.array(image)
-            save_with_scale_bar(mode, image, path, name+'.tiff', length, resolution, unit)
+            for title, image in (images.items()):
+                save_with_scale_bar(mode, np.array(image), path, name+'.tiff', length, resolution, unit)
             
-        elif len(image)>1:
+        elif len(images)>1:
             
-            for j in range (len(image)):
-                img_name = image[j].metadata.General.title
-                if not isinstance(image[j], np.ndarray):
-                    image[j] = np.array(image[j])
-                    save_with_scale_bar(mode, image[j], path, name+"{:}".format(img_name)+'.tiff', length, resolution, unit)
+            for title, image in (images.items()):
+                save_with_scale_bar(mode, np.array(image), path, name+title+'.tiff', length, resolution, unit)
                 
         else: print(f'There is no image in {name}' )
 
@@ -765,7 +925,7 @@ def save_with_scale_bar(mode, image, path, name, length, resolution, unit):
         mode = "Imaging"
     
     # Process the image based on the mode
-    if mode == "Diffraction":
+    if mode == "DIFFRACTION":
         im = Image.fromarray(np.interp(image, (0, 80 * np.log(image.max())), (0, 65535)).astype(np.uint16))
     else:
         im = Image.fromarray(np.interp(image, (image.min(), image.max()), (0, 65535)).astype(np.uint16))

@@ -13,9 +13,9 @@ import cmath
 import math  
 from numba import cuda, float64, complex128, int32
 import imageio 
-import hyperspy.api as hs 
+
 from PIL import Image, ImageDraw, ImageFont
-from phase_STEM import tools, denoising
+from phase_STEM import tools
 from tqdm.notebook import tqdm
 import pyfftw
 

@@ -10,7 +10,12 @@ from matplotlib.colors import Normalize
 from matplotlib_scalebar.scalebar import ScaleBar
 import cupy as cp
 import numpy as np
-import hyperspy.api as hs #load dataset 
+#import hyperspy.api as hs #load dataset 
+from rsciio.emd import file_reader as emd_reader
+from rsciio.digitalmicrograph import file_reader as dm_reader
+from rsciio.mrc import file_reader as mrc_reader
+from rsciio.tia import file_reader as tia_reader
+
 from PIL import Image
 from skimage.segmentation import watershed
 from ipywidgets import interact, widgets
@@ -24,7 +29,156 @@ from scipy import ndimage
 import cupyx.scipy.ndimage as cpndimage
 from typing import Optional, Tuple, List
 import pyfftw
-from phase_STEM import analysis, EMFilters
+from phase_STEM import analysis, EMFilters, io
+
+class ImageProcessor:
+    """
+    A class to process images by loading data from various file formats, applying filters,
+    plotting images, and saving them to HDF5 files.
+    This class only can process one file at a time.
+
+    Example: 
+    if __name__ == "__main__":
+        path = "path/image.emd"  # Replace with actual file path
+        processor = ImageProcessor(path)
+        processor.plot_images(colormap='viridis', saving=os.path.splitext(path)[0])
+        processor.save_to_h5(saving=os.path.splitext(path)[0])
+    """
+    
+    def __init__(self, file_path, resolution=None, unit=None):
+        """
+        Initialize the ImageProcessor with a file path and load the data.
+
+        Args:
+            file_path (str): Path to the data file.
+            resolution (float): Resolution of the images.
+            unit (str): Unit of the resolution.
+        """
+        self.file_path = file_path
+        self.images = {}  # Dictionary to store image data
+        self.resolution = resolution  # Resolution of the images
+        self.unit = unit  # Unit of the resolution
+        self.mode = 'Probe'
+        self.load_data()
+
+    def load_data(self):
+        """
+        Load data from the file and populate images, resolution, and unit attributes.
+        
+        Raises:
+            ValueError: If the file format is not supported.
+        """
+        file_extension = os.path.splitext(self.file_path)[1][1:].lower()
+        self.mode = image_mode(self.file_path)
+        if file_extension == 'emd':
+            data = emd_reader(self.file_path)
+            if self.resolution is None:
+                self.resolution = data[0]['axes'][0]['scale']
+            if self.unit is None:
+                self.unit = data[0]['axes'][0]['units']
+            self.images = {item['metadata']['General']['title']: item['data'] for item in data}
+        
+        elif file_extension in ('dm3', 'dm4'):
+            data = dm_reader(self.file_path)
+            if self.resolution is None:
+                self.resolution = data[0]['axes'][0]['scale']
+            if self.unit is None:
+                self.unit = data[0]['axes'][0]['units']
+            self.images = {item['metadata']['General']['title']: item['data'] for item in data}
+        
+        elif file_extension == 'mrc':
+            data = mrc_reader(self.file_path)
+            if self.resolution is None:
+                self.resolution = 1
+            if self.unit is None:
+                self.unit = 'px'
+            self.images = {item['metadata']['General']['title']: item['data'] for item in data}
+        
+        elif file_extension in ('ser', 'emi'):
+            data = tia_reader(self.file_path)
+            if self.resolution is None:
+                self.resolution = data[0]['axes'][0]['scale']
+            if self.unit is None:
+                self.unit = data[0]['axes'][0]['units']
+            self.images = {item['metadata']['General']['title']: item['data'] for item in data}
+        
+        elif file_extension in ('h5', 'hdf5'):
+            self.images = io.h5_reader(self.file_path)
+            if self.resolution is None:
+                self.resolution = 1
+            if self.unit is None:
+                self.unit = 'px'
+        
+        else:
+            raise ValueError(f"Unsupported file format: {file_extension}")
+
+
+    def plot_images(self, colormap='grey', saving=None):
+        """
+        Plot images from the loaded data with optional saving.
+
+        Args:
+            colormap (str): Colormap for plotting (default: 'grey').
+            saving (str or None): Directory to save images; if None, images are not saved.
+        """
+        if saving and not os.path.exists(saving):
+            os.makedirs(saving)
+
+        excluded = {'dDPC', 'DF4_A', 'DF4_B', 'DF4_C', 'DF4_D', 'A-C', 'B-D'}
+        i = 0
+        if self.unit == "Å":
+            self.unit = "nm"
+            self.resolution *= 0.1
+        if self.mode == 'DIFFRACTION' :
+            unit_type = 'si-length-reciprocal' 
+        else:
+            unit_type ='si-length'
+        for title, image in self.images.items():
+            if i >= 50:
+                break
+            if title == 'iDPC' or title not in excluded:
+                if title == 'iDPC':
+                    image = EMFilters.gaussian_bandpass(image, space='real', highpass=True, cutoff_ratio=0.01)
+                
+                fig, ax = plt.subplots(figsize=(6, 6))
+                if self.mode != 'DIFFRACTION':
+                    ax.imshow(image, cmap=colormap)
+                else:
+                    ax.imshow(np.log(np.abs(image)+1), cmap=colormap)
+                scale_bar = ScaleBar(
+                    self.resolution,
+                    units = self.unit,
+                    dimension = unit_type,
+                    length_fraction = 0.2,
+                    location ='lower left',
+                    scale_loc ='top'
+                )
+                ax.add_artist(scale_bar)
+                ax.set_title(title)
+                ax.axis('off')
+                plt.tight_layout()
+                
+                if saving:
+                    plt.savefig(os.path.join(saving, f"{title}.png"), format='png', dpi=600)
+                plt.show()
+                i += 1
+
+    def save_to_h5(self, saving='path'):
+        """
+        Save images to an HDF5 file, applying a filter to 'iDPC' images.
+
+        Args:
+            saving (str): Base path for the HDF5 file (without extension).
+        """
+        with h5py.File(f"{saving}.h5", 'w') as data:
+            group_name = f"{self.resolution}{self.unit}"
+            reconstruct = data.create_group(group_name)
+            for title, image in self.images.items():
+                if title == 'iDPC':
+                    filtered_image = EMFilters.gaussian_bandpass(image, space='real', highpass=True, cutoff_ratio=0.01)
+                    reconstruct.create_dataset("High-pass filtered iDPC", data=filtered_image)
+                else:
+                    reconstruct.create_dataset(title, data=image)
 
 
 def diagonal_split(img):
@@ -451,104 +605,27 @@ def plot_img_and_hist(image, bins=256):
     ax_cdf.plot(bins, img_cdf, 'r')
     ax_cdf.set_yticks([])
 
-def image_mode(s):
+def image_mode(file_path):
     """
-    It aims to find the imaging mode of the dataset.
+    Determines the imaging mode of the dataset.
     
     Args:
-    s: loaded using the command 'hs.load('file')'
+        file_path (str): Path to the dataset file.
     
+    Returns:
+        str: The imaging mode.
     """
-    global mode
-    if len(s)==1:
-        try:
-            mode = s.original_metadata.ImageList.TagGroup0.ImageTags.Acquisition.Parameters.Environment.Mode_Name
-        except:
-            pass
-        try:
-            mode = s.original_metadata.Optics.IlluminationMode
-        except:
-            pass
-        print(f'The imaging mode is {mode}')  
-        return mode
-    elif len(s)>1:
-        try:
-            mode = s[0].original_metadata.Optics.IlluminationMode
-        except:
-            pass
-        print(f'The imaging mode is {mode}')
-        return mode
-    else: print('There is no image!')
-
-
-
-def parameters_data(s, mode):
-
-    """
-     Extract information of images, eg. pixel size, collection angle of detector
+    file_extension = os.path.splitext(file_path)[1][1:].lower()
     
-    Args:
-    s: dataset loaded using hs.load('file')
-    mode: The type of images, "Diffraction", "Imaging"
+    if file_extension in ('dm3', 'dm4'):
+        dm_data = dm_reader(file_path)
+        return dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['Microscope Info']['Operation Mode']
+    elif file_extension == 'emd':
+        emd_data = emd_reader(file_path)
+        return emd_data[0]['original_metadata']['Optics']['IlluminationMode']
     
-    Return:
-    There are possible returns:
-    (1) resolution, pixelsize, unit: (when the imaging mode is "Diffraction" or "Imaging")
-    or
-    (2) Return resolution, pixelsize, unit, collection_angle, Detector: (when the imaging mode is "STEM")
-    """
-
-    mode= mode
+    return None
     
-    if len(s)==0:
-        print(f'There is no image found !!!')
-    elif len(s)==1:
-        img =s
-    else: img = s[len(s)-1]
-        
-    resolution = img.axes_manager[1].scale   
-    pixelsize = img.axes_manager[1].size
-    unit = img.axes_manager[1].units
-    if (mode == "Diffraction" or mode=="Imaging"):
-        beam_voltage = s.original_metadata.ImageList.TagGroup0.ImageTags.Microscope_Info.Voltage
-        parameters ={   'beam_voltage':beam_voltage,
-                        'resolution':resolution,
-                        'unit':unit,
-                        'size in pixel':pixelsize,                        
-                        }        
-        return parameters    
-    else: 
-        try:
-            angle_begin = img.original_metadata.Detectors.Detector3.CollectionAngleRange.begin
-            angle_end = img.original_metadata.Detectors.Detector3.CollectionAngleRange.end
-            collection_angle = [round(float(angle_begin),3), round(float(angle_end),3)] #in rad
-            conver_angle = img.original_metadata.Optics.BeamConvergence #in rad
-            Detector = img.original_metadata.Detectors.Detector3.DetectorName
-            beam_voltage = img.original_metadata.Optics.AccelerationVoltage
-            beam_voltage = float(beam_voltage)/1000
-         
-            beam_current = img.original_metadata.Optics.LastMeasuredScreenCurrent
-            beam_current = float(beam_current)
-
-            dwell_time = img.original_metadata.Scan.DwellTime
-            dwell_time = float(dwell_time)
-            q = 6.242 * (10 ** 18)
-            dose_rate = (beam_current*dwell_time*q)/(100*resolution**2)
-            parameters ={'collection_angle':collection_angle,                        
-                         'screen_current': beam_current,
-                        'dose_rate':dose_rate,
-                         'unit in dose rate': u'e-/Å\u00B2',
-                        'resolution':resolution,
-                         'unit':unit,
-                        'size in pixel':pixelsize,
-                        'Semi_convergence_angle':round(float(conver_angle),3),
-                        'Detector':Detector,
-                        'beam_voltage':beam_voltage,}            
-            return parameters
-        except:
-            print('Image(s) could be captured by a camera, instead of detector(s).')
-            return parameters
-
 
 def show_FFT(img, resolution, unit="nm"):
     """
@@ -933,12 +1010,12 @@ def browse_images_in_folder(folder_path, colormap='viridis'):
                                      description='Mode:', disabled=False)
             )
 
-def extract_segmented_image(s, order_map):
+def extract_segmented_image(file_path, order_map):
     """
     Searching the segmented images from '.emd' dataset to store in a list with their names
     
     Args:
-    s: dataset loaded using 'hs.load()'
+    file_path: the directory of the dataset, loading data using rsciio.emd.file_reader(file_path)
     order_map: dic, listing the names of each segments, e.g.
         {
           'DF4-A': 'A',
@@ -954,6 +1031,7 @@ def extract_segmented_image(s, order_map):
     titles: a list storing the corresponding names of images
     
     """
+    emd_data = emd_reader(file_path)
     DPC_imgs = []
     titles = []
     if order_map is None:
@@ -963,12 +1041,12 @@ def extract_segmented_image(s, order_map):
         'DF4-C': 'C',
         'DF4-D': 'D'
         }
-    num = len(s)
+    num = len(emd_data)
     if num > 1:
         for i in range(num):
-            title = s[i].metadata.General.title
+            title = emd_data[i]['metadata']['General']['title']
             if title in order_map:
-                DPC_imgs.append(s[i].data)
+                DPC_imgs.append(emd_data[i]['data'])
                 titles.append(title)
     
         # Sort the images based on the predefined order
@@ -983,90 +1061,57 @@ def extract_segmented_image(s, order_map):
     return DPC_imgs, titles
 
 
-def image_info(file_name):
+def get_info(file_path, all_info = False):
     """
-    It provides an approach to extract the information using ncempy
+    It is to extract the information of the dataset, including the resolution, magnification, unit, and so on.
+    It supports .emd, .dm3, .dm4, .ser, and .emi files.
     """
+    file_extension = os.path.splitext(file_path)[1][1:].lower()  # Get extension without dot
+    library = {}  # Initialize empty dictionary
 
-    try: import ncempy
-    except ImportError: print("There needs to import the module of 'ncempy")
+    if file_extension == 'emd':
+        emd_data = emd_reader(file_path)
+        if all_info:
+            print(dict_tree(emd_data[0]))
+        library['title'] = emd_data[0]['metadata']['General']['original_filename']
+        library['resolution'] = emd_data[0]['axes'][0]['scale']
+        library['unit'] = emd_data[0]['axes'][0]['units']
+        library['pixel_size'] = emd_data[0]['axes'][0]['size']
+        library['Acquisition Date'] = emd_data[0]['metadata']['General']['date']
+        library['Acquisition Time'] = emd_data[0]['metadata']['General']['time']
+        library['Stage Position'] = emd_data[0]['original_metadata']['Stage']['Position']
+        library['Dwell Time (s)'] = emd_data[0]['original_metadata']['Scan']['DwellTime']
+        library['Acc. voltage (V)'] = emd_data[0]['original_metadata']['Optics']['AccelerationVoltage']
+        library['Illumination mode'] = emd_data[0]['original_metadata']['Optics']['IlluminationMode']
+        if library['Illumination mode'] == 'Probe':
+            library['Probe semi_convergence angle (rad)'] = emd_data[0]['original_metadata']['Optics']['BeamConvergence']
+        library['LastMeasuredScreenCurrent (pA)'] = float(emd_data[0]['original_metadata']['Optics']['LastMeasuredScreenCurrent'])*10**12
+    elif file_extension in ('dm3', 'dm4'):
+        dm_data = dm_reader(file_path)
+        if all_info:
+            print(dict_tree(dm_data[0]))
+        library['title'] = dm_data[0]['metadata']['General']['title']
+        library['resolution'] = dm_data[0]['axes'][0]['scale']
+        library['unit'] = dm_data[0]['axes'][0]['units']
+        library['pixel_size'] = dm_data[0]['axes'][0]['size']
+        library['Exposure Time (s)'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['DataBar']['Exposure Time (s)']
+        library['Acquisition Date'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['DataBar']['Acquisition Date']
+        library['Acquisition Time'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['DataBar']['Acquisition Time']
+        library['Stage Position'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['Microscope Info']['Stage Position']
+        library['Acc. voltage (V)'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['Microscope Info']['Voltage']
+        library['Illumination mode'] = dm_data[0]['original_metadata']['ImageList']['TagGroup0']['ImageTags']['Microscope Info']['Operation Mode']
+    elif file_extension in ('ser', 'emi'):
+        tia_data = tia_reader(file_path)
+        if all_info:
+            print(dict_tree(tia_data[0]))
+        library['title'] = tia_data[0]['metadata']['General']['title']
+        library['resolution'] = tia_data[0]['axes'][0]['scale']
+        library['unit'] = tia_data[0]['axes'][0]['units']
+        library['pixel_size'] = tia_data[0]['axes'][0]['size']
 
-    s = ncempy.io.reader(file_name) #load the data
-    try:
-        s_Tags = ncempy.io.dm.fileDM(file_name) #Read the information of dataset      
-        pixelSize = s['data'].shape[0]
-        s_parameters = s_Tags.getMetadata(0)
-        voltage = s_parameters['Microscope Info Voltage'] # in keV
-        wavelength = analysis.wavelength_beam(voltage/1000) #in nm    
-        unit = s_parameters['Calibrations Dimension 1 Units']
-        resolution = s_parameters['Calibrations Dimension 1 Scale']
-        print(f'The accelerated voltage of the electron beam is {voltage/1000: .0f} keV. \n')
-        print(f'The wave length of the electron beam is {wavelength*1000: .5f} pm. \n')
-        print(f'The scale bar is {resolution: .5f} {unit} per pixel.\n')
-        print(f'The pixel size of image is {pixelSize} pixels.\n')
-        return wavelength, resolution, pixelSize
-    except:
-        s = hs.load(file_name)
-        dict_tree(information_data(s))
+    return library
 
-def information_data(s):
-    """
-    This function requires the hyperspy.load() to load the daset as the input "s"
-    """
-    
-    if len(s)==0:
-        print(f'There is no image found !!!')
-    elif len(s)==1:
-        img =s
-    else: img = s[len(s)-1]
-        
-    Acquisition_instrument = {} #build a dictionary
-    Acquisition_instrument["original_filename"] = str(img.metadata.General.original_filename)
-    Acquisition_instrument["data"] = str(img.metadata.General.date)+"/"+str(img.metadata.General.time)
-    beam_voltage = img.original_metadata.Optics.AccelerationVoltage
-    beam_voltage = float(beam_voltage)/1000
-    Acquisition_instrument["beam_voltage (kV)"] = beam_voltage
-    Acquisition_instrument["camera_length(mm)"] = round(float(img.original_metadata.Optics.CameraLength)*1000, 2)
-    resolution = float(img.axes_manager[1].scale)
-    Acquisition_instrument["resolution"] = resolution
-    Acquisition_instrument["unit"] = str(img.axes_manager[1].units)
-    Acquisition_instrument["size in pixel"] = int(img.axes_manager[1].size)
-    semi_conv = img.original_metadata.Optics.BeamConvergence
-    semi_conv = round(float(semi_conv), 3)
-    Acquisition_instrument["semi_convergence_angle (rad)"] = semi_conv
-    detector1 = img.original_metadata.Detectors.Detector6.DetectorName
-    HAADF_begin = img.original_metadata.Detectors.Detector6.CollectionAngleRange.begin
-    HAADF_end = img.original_metadata.Detectors.Detector6.CollectionAngleRange.end
-    HAADF_angle = np.array([round(float(HAADF_begin),3), round(float(HAADF_end),3)]) #in rad
-    angle_begin = img.original_metadata.Detectors.Detector3.CollectionAngleRange.begin
-    angle_end = img.original_metadata.Detectors.Detector3.CollectionAngleRange.end
-    collection_angle = np.array([round(float(angle_begin),3), round(float(angle_end),3)]) #in rad
-    detector2 = img.original_metadata.Detectors.Detector3.DetectorName
-    Acquisition_instrument[detector2+"_collection_angle(rad)"] = collection_angle
-    Acquisition_instrument[detector1+"_collection_angle(rad)"] = HAADF_angle
-    defocus = img.original_metadata.Optics.Defocus
-    Acquisition_instrument["defocus (nm)"] = round(float(defocus)*(10**(9)), 2)
-    beam_current = img.original_metadata.Optics.LastMeasuredScreenCurrent
-    Acquisition_instrument["Last measured beam_current (pA)"] = round(float(beam_current)*(10**12), 3)
-    dwell_time = img.original_metadata.Scan.DwellTime
-    dwell_time = float(dwell_time)
-    q = 6.242 * (10 ** 18)
-    dose_rate = (float(beam_current)*dwell_time*q)/(100*resolution**2)
-    Acquisition_instrument["dwell_time(us)"] = round(float(dwell_time)*(10**6), 3)
-    mag = float(img.metadata.Acquisition_instrument.TEM.magnification)
-    if mag > 10**(6):
-        Acquisition_instrument["magnification"] = str(mag/10**(6))+"_Mx"
-    elif mag > 10**(3):
-        Acquisition_instrument["magnification"] = str(mag/10**(3))+"_Kx"
-    else: Acquisition_instrument["magnification"] = str(mag)+"_x"
-    Acquisition_instrument["dose_rate(eÅ-2)"] = round(dose_rate, 2)
-    Acquisition_instrument["tilt_alpha(deg)"] = round(float(img.metadata.Acquisition_instrument.TEM.Stage.tilt_alpha),3)
-    Acquisition_instrument["tilt_beta(deg)"] = round(float(img.metadata.Acquisition_instrument.TEM.Stage.tilt_beta),3)
-    Acquisition_instrument["stage_x (um)"] = round(float(img.original_metadata.Stage.Position.x)*10**(6), 3)
-    Acquisition_instrument["stage_y(um)"] = round(float(img.original_metadata.Stage.Position.y)*10**(6), 3)
-    Acquisition_instrument["stage_z(um)"] = round(float(img.original_metadata.Stage.Position.z)*10**(6), 3)
-    
-    return Acquisition_instrument
+
 
 def dict_tree(data, indent=""):
   """Recursively prints nested dictionary keys and values with indentation."""
@@ -1108,6 +1153,7 @@ def data_tree(file):
 
     for key in file.keys():
         head_tree(file[key])
+
 
 
 def crop_matrix(original_matrix, axis=(0, 1), centre=None, crop_size=None):
@@ -1292,6 +1338,7 @@ def plot_image(DPC_imgs, properties=None):
     default_properties = {
         'resolution': 1,
         'unit': 'nm',
+        'mode': None,
         'bar location': 'lower left',
         'image titles': [None]*len(DPC_imgs),
         'annotates': annotate,
@@ -1322,9 +1369,8 @@ def plot_image(DPC_imgs, properties=None):
     image = []
     img_name = []
     
-    try:
-        mode = image_mode(DPC_imgs)
-    except: mode = "Imaging"
+    if properties['mode'] is None:
+        mode = "Imaging"
             
     if isinstance(DPC_imgs, list) and len(DPC_imgs)>1: 
         if isinstance(DPC_imgs[0], list):

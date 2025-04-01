@@ -10,39 +10,38 @@ from phase_STEM import tools
 def poisson_noise(image, percent_noise=5.0, seed=None):
     """
     Add Poisson noise to an image with controlled noise level.
+
     The Poisson distribution has a mean of lamda=
         area per pixel * dose per area * intensity
-        where it is assumed that intensity of the reciprocal space probe is normalized to integrate to 1.
+        ,where it is assumed that intensity of the reciprocal space probe is normalized to integrate to 1.
     Parameters:
-    image (numpy.ndarray): The input image.
-    percent_noise (float): The percentage of noise to add.
-    seed (int, optional): The random seed for reproducibility.
+        image (numpy.ndarray): The input image.
+        percent_noise (float): The percentage of noise to add.
+        seed (int, optional): The random seed for reproducibility.
 
     Returns:
-    numpy.ndarray: The noisy image.
+        Noisy image array
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     noisy_image = image.copy()
     
-    unique_vals = np.unique(image)
-    
-    for val in unique_vals:
+    for val in np.unique(image):
         idx = image == val
-        count = np.sum(idx)
+        if not np.any(idx):
+            continue
+            
+        current_mean = val
+        noisy_values = rng.poisson(current_mean, size=np.sum(idx))
+        new_mean = np.sqrt(current_mean) / (percent_noise / 100.0)
         
-        if count > 0:
-            current_mean = val
-            # Generate Poisson noise
-            noisy_values = poisson.rvs(current_mean, size=count)
-            
-            # Adjust the standard deviation to the required level
-            new_mean = np.sqrt(current_mean) / (percent_noise / 100.0)
+        if new_mean != 0:
+            scale_factor = current_mean / new_mean
             noisy_values = noisy_values + (new_mean - current_mean)
+            noisy_values *= scale_factor
+        else:
+            noisy_values *= current_mean
             
-            # Adjust back to starting mean, but with noise added
-            noisy_values = noisy_values * (current_mean / new_mean) if new_mean !=0 else noisy_values * current_mean
-            
-            noisy_image[idx] = noisy_values
+        noisy_image[idx] = noisy_values
     
     return noisy_image
 
@@ -50,7 +49,7 @@ def add_poisson_noises(image, electron_dose, pixelsize, seed=None):
     """
     Add Poisson noise to an image array.
     
-    Parameters:
+    Args:
         image (np.ndarray): Input image array with shape:
                             - (px, py): Single 2D image
                             - (N, px, py): Stack of 2D images
@@ -60,7 +59,7 @@ def add_poisson_noises(image, electron_dose, pixelsize, seed=None):
         seed (int, optional): Random seed for reproducibility.
     
     Returns:
-        np.ndarray: Noisy image array with the same shape as the input.
+        Noisy image array with the same shape as the input.
     """
     
     def _apply_noise(array, dose, pixel_size, rng):

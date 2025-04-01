@@ -494,39 +494,49 @@ def elliptical_Fourier_filter(size,sigma1,sigma2,theta):
         mask_fourierspace = np.fft.fftshift(np.exp( -(a*kx**2 + 2*b*kx*ky + c*ky**2) ))
         return mask_fourierspace
 
-def gaussian_bandpass(img, space='real', mode="low", cutoff_ratio=0.1):
+def gaussian_bandpass(image, space='real', highpass=True, cutoff_ratio=0.1):
     """
-    same as "scipy.ndimage.fourier_gaussian(img, sigma=cutoff_ratio)"
-    Employing a Gaussian filter on an image in its Fourier space.
-
+    Build a 2D Gaussian filter for image processing in the Fourier space.
+    
     Args:
-        img: image array to be filtered, must be square
-        cutoff_ratio: cutoff ratio in frequency domain, equal with standard deviation
-        mode: string, "low" or "high", representing low-band pass or high-band pass filter
+        image (np.ndarray): Input image to apply the filter to.
+        cutoff_ratio (float): The cutoff frequency ratio. It determines the bandwidth of the filter.
+        highpass (bool): If True, apply high-pass filter; if False, apply low-pass filter.
+        
+    Returns:
+        np.ndarray: The filtered image after applying the Gaussian filter.
     """
-    if mode is None:
-        mode = "low"
-    sizex, sizey = img.shape
-    r = cartesian_to_polar([sizex, sizey], [sizex//2, sizey//2])
-
-    cutoff = sizex * cutoff_ratio
-    if mode == "low":
-        gaussian_fr = np.exp(- (r**2) / (2 * (cutoff**2)))
+    # Get the size of the image
+    size = image.shape
+    
+    if space == 'real':
+        dft = np.fft.fftshift(np.fft.fft2(image))
     else:
-       gaussian_fr = 1 - np.exp(- (r**2) / (2 * (cutoff**2)))
-    if space =='real':
-        img_fft = fftshift(fft2(img))
-        filtered_fshift = img_fft * gaussian_fr
-    else:
-        filtered_fshift = img * gaussian_fr *sizex*sizey
-
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout =True)
-    axes[0].imshow(np.log(np.abs(gaussian_fr)+.1))
-    axes[0].set_title(mode+"_pass Gaussian filter")
-    axes[1].imshow(np.log(np.abs(filtered_fshift)+.1))
-    axes[1].set_title("After applying Gaussian filter")
-    plt.show()
-    return filtered_fshift
+        dft = image
+    # Create frequency coordinates for x and y axes
+    qx = np.fft.fftfreq(size[0], 1/size[0])  # Frequency for rows (y axis)
+    qy = np.fft.fftfreq(size[1], 1/size[1])  # Frequency for columns (x axis)
+    
+    # Shift frequencies for easier handling
+    qx = np.fft.fftshift(qx)
+    qy = np.fft.fftshift(qy)
+    
+    # Create meshgrid of frequency components
+    qya, qxa = np.meshgrid(qy, qx)
+    qra = np.sqrt(qxa**2 + qya**2)  # Calculate the radial frequency (distance from the center)
+    
+    # Create the Gaussian envelope (filter)
+    q_lowpass = max(qx.max(), qy.max()) * cutoff_ratio  # Define the cutoff frequency
+    env = np.exp(- (qra**2) / (2 * (q_lowpass**2)))  # Gaussian filter
+    
+    # Apply the highpass filter if required
+    if highpass:
+        env = 1 - env  # Invert the filter for highpass
+    
+    # Multiply the filter in the frequency domain and apply the inverse FFT
+    filtered_image = np.fft.ifft2(np.fft.ifftshift(env * dft))
+    
+    return np.real(filtered_image)
 
 def gaussian_filter(
        size, cutoff_ratio, highpass =True
@@ -552,7 +562,7 @@ def gaussian_filter(
     qra = np.sqrt(qxa**2 + qya**2)
 
     env = np.ones_like(qra)
-    q_lowpass = max_freq * cut_ratio
+    q_lowpass = max_freq * cutoff_ratio
     env *= np.exp(- (qra**2) / (2 * (q_lowpass**2)))
     if highpass:
         env = 1 -env
