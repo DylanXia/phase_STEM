@@ -131,6 +131,7 @@ class ImageProcessor:
             self.resolution *= 0.1
         if self.mode == 'DIFFRACTION' :
             unit_type = 'si-length-reciprocal' 
+            self.unit = f"1/{self.unit}"
         else:
             unit_type ='si-length'
         for title, image in self.images.items():
@@ -830,7 +831,7 @@ def browse_images(dataset, properties={
         if n > 0:
             img = dataset if n == 1 else dataset[i]
             try:
-                title = img.metadata.General.title
+                title = img['metadata']['General']['original_filename']               
             except AttributeError:
                 title = ''
             if not isinstance(img, np.ndarray):
@@ -914,7 +915,8 @@ def browse_images(dataset, properties={
                     outputMask[0] = mask
             plt.tight_layout()
             plt.show()            
-    interact(view_img, i=(0,n-1),
+    interact(view_img, 
+             i=widgets.IntSlider(min = 0, max = n-1, value = 0),
             ratio = widgets.IntSlider(min = 1, max = 8, value = 2),
             FFTspots=widgets.Dropdown(options=[True, False]),
             inverse=widgets.Dropdown(options=[False, True]),
@@ -1377,9 +1379,9 @@ def plot_image(DPC_imgs, properties=None):
             print(f'The format of input data is incorrect!!!')
         else:
             try:
-                label = DPC_imgs[0].axes_manager[1].units
+                label = DPC_imgs[0]['axes'][0]['units']
                 for j in range (len(DPC_imgs)):
-                    img_name.append(DPC_imgs[j].metadata.General.title) #read the title of images
+                    img_name.append(DPC_imgs[j]['metadata']['General']['title']) #read the title of images
             except:
                 label = properties['unit']
                 for j in range (len(properties['image titles'])):
@@ -1398,10 +1400,10 @@ def plot_image(DPC_imgs, properties=None):
         if row*column < len(image):
             column += 1
         fig, axs =  plt.subplots(row, column, 
-                                 figsize=(properties['figsize']*column, a + properties['figsize'])) 
+                                 figsize=(properties['figsize']*column, a + properties['figsize']*row)) 
         
         for i, ax in enumerate(axs.flat):
-            if mode =="Diffraction": # The constant '80' can be adjusted for the diffraction displaying
+            if mode =="DIFFRACTION": # The constant '80' can be adjusted for the diffraction displaying
                 if np.issubdtype(image[i].dtype, np.complex128):
                     f_image = image[i].real
                 else: f_image = image[i]
@@ -1415,8 +1417,9 @@ def plot_image(DPC_imgs, properties=None):
                 unit_style = 'si-length'
             if properties['resolution'] is None:
                 try:
-                    resolution = DPC_imgs[0].axes_manager[1].scale
-                except:resolution =1
+                    resolution = DPC_imgs[0]['axes'][0]['scale']
+                except:
+                    resolution =1
             else: resolution = properties['resolution']
             
             ax.imshow(im, cmap = properties['cmap'], interpolation = properties['interpolation'])
@@ -1429,7 +1432,8 @@ def plot_image(DPC_imgs, properties=None):
                           fontsize='large', verticalalignment='top', fontfamily='arial',
                          bbox=dict(facecolor='0.7', edgecolor='none', pad=3.0))
                 
-            scale_bar = ScaleBar(resolution, units=label, dimension = unit_style, length_fraction = 0.2, location = properties['bar location'],scale_loc = 'top')
+            scale_bar = ScaleBar(resolution, units=label, dimension = unit_style, length_fraction = 0.2, 
+                                 location = properties['bar location'],scale_loc = 'top')
             ax.add_artist(scale_bar)
             #ax.set_ylabel(label)
             ax.axis("off")
@@ -1444,8 +1448,8 @@ def plot_image(DPC_imgs, properties=None):
             print(f'The input data is incorrect!!!')
         else:
             try:
-                label = DPC_imgs.axes_manager[1].units
-                img_name.append(DPC_imgs.metadata.General.title)
+                label = DPC_imgs[0]['axes'][0]['units']
+                img_name.append(DPC_imgs[0]['metadata']['General']['title'])
             except:
                 label = properties['unit']
                 img_name.append(properties['image titles'])  
@@ -1457,7 +1461,7 @@ def plot_image(DPC_imgs, properties=None):
         if properties['cropping image'][0]:
             image = crop_matrix(image,(0,1), properties['cropping image'][1], properties['cropping image'][2])
                 
-        if mode =="Diffraction":
+        if mode =="DIFFRACTION":
             if np.issubdtype(image.dtype, np.complex128):
                 f_image = image.real
             else: f_image = image
@@ -1472,7 +1476,7 @@ def plot_image(DPC_imgs, properties=None):
             
         if properties['resolution'] is None:  
             try:
-                resolution = DPC_imgs.axes_manager[1].scale
+                resolution = DPC_imgs[0]['axes'][0]['scale']
             except: resolution = 1
         else: resolution = properties['resolution']
         
