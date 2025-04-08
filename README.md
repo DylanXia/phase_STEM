@@ -24,10 +24,9 @@ The CUDA is employed to accelerate the calculation, which the cupy and numba are
 * pillow
 * pandas
 * mrcfile
-*skimage
-*pyfftw
-*cv2
-*PIL
+* skimage
+* pyfftw
+* PIL
 
 ### Updates:
 v0.0.1: 1. the reconstruction procedure is included
