@@ -796,7 +796,8 @@ def browse_images(dataset, properties={
     
     Args:
     
-    dataset: list, storing the data with matrix. It is loaded using 'hs.load()'
+    dataset: The dataset can be a list or dictionary of images, or a 2D/3D/4D numpy array.
+            
     
     """
 
@@ -818,7 +819,15 @@ def browse_images(dataset, properties={
     unit = properties['unit']    
     if isinstance(dataset, np.ndarray):
         shape = dataset.shape
-        n = shape[0] if len(shape) == 3 else 1 if len(shape) == 2 else None
+        num_dimensions = len(shape)
+        if num_dimensions == 2:
+            n = 1
+        elif num_dimensions == 3:
+            n = shape[0]
+        elif num_dimensions == 4:
+            n = shape[0] * shape[1]
+        else:
+            print("Error: The input numpy array seems not correct in shape!")
     elif isinstance(dataset, list) or isinstance(dataset, dict):
         n = len(dataset)
     else:
@@ -834,7 +843,7 @@ def browse_images(dataset, properties={
                 img = dataset[title]
             else:
                 img = dataset[i]
-                title = ''
+                title = f'Image : {i}'
             if not isinstance(img, np.ndarray):
                 img = np.asarray(img)
                 
@@ -917,7 +926,7 @@ def browse_images(dataset, properties={
             plt.tight_layout()
             plt.show()            
     interact(view_img, 
-             i=widgets.IntSlider(min = 0, max = n-1, value = 0),
+             i=widgets.IntSlider(min = 0, max = int(n-1), value = 0),
             ratio = widgets.IntSlider(min = 1, max = 8, value = 2),
             FFTspots=widgets.Dropdown(options=[True, False]),
             inverse=widgets.Dropdown(options=[False, True]),
@@ -1059,7 +1068,10 @@ def extract_segmented_image(file_path, order_map):
 
     else:
         print(f'DPC segmented image is lacking in raw data')
-  
+    
+    if not titles:
+        print(f'The segmented images are not found in the dataset!')
+        return None, None
 
     return DPC_imgs, titles
 
