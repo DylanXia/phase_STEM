@@ -829,10 +829,11 @@ def browse_images(dataset, properties={
     outputMask =[]
     def view_img(i, ratio, sigma_max, background, FFTspots, inverse, disk_size):
         if n > 0:
-            img = dataset if n == 1 else dataset[i]
-            try:
-                title = img['metadata']['General']['original_filename']               
-            except AttributeError:
+            if isinstance(dataset, dict):
+                title = list(dataset.keys())[i]
+                img = dataset[title]
+            else:
+                img = dataset[i]
                 title = ''
             if not isinstance(img, np.ndarray):
                 img = np.asarray(img)
@@ -854,7 +855,7 @@ def browse_images(dataset, properties={
             rec_resolution = 1/(properties['resolution']*power_spec.shape[0])
 
             pixels = (np.linspace(0,power_spec.shape[0]-1,power_spec.shape[0])-power_spec.shape[0]/2)* rec_resolution
-            x,y = np.meshgrid(pixels,pixels);
+            x,y = np.meshgrid(pixels,pixels)
             mask = np.zeros(power_spec.shape)
 
             mask_spot = x**2+y**2 > 2**2 
