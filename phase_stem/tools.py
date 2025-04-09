@@ -819,7 +819,7 @@ def browse_images(dataset, properties={
     if isinstance(dataset, np.ndarray):
         shape = dataset.shape
         n = shape[0] if len(shape) == 3 else 1 if len(shape) == 2 else None
-    elif isinstance(dataset, list):
+    elif isinstance(dataset, list) or isinstance(dataset, dict):
         n = len(dataset)
     else:
         print("Error: The input dataset seems not correct in format!")
